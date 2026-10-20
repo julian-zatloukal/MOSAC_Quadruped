@@ -1,0 +1,9 @@
+{
+  "gait_period": 2.2,
+  "parabola_height": 12.0,
+  "omega_max": 0.3,
+  "ramp_cycles": 1.0,
+  "kp": 2.0,
+  "omega_min": 0.04,
+  "tol_deg": 1.0
+}

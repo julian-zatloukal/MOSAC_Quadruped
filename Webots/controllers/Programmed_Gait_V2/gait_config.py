@@ -21,6 +21,13 @@ DEFAULTS = {
     # point, so a swung foot hovers ~6 mm above the floor through the next push stage and then drops in one step.
     # True = each step aims at where the foot should be at the END of the step, so every stage completes.
     "finish_stages": False,
+    # How the cycle is shared out between the kinds of stage: each takes a part proportional to its weight. Only the ratios
+    # matter. The swing is where the joints move fastest, so giving it more of the cycle than the others lets the whole cycle
+    # run faster without any joint moving faster.
+    "weight_lean": 1.0,
+    "weight_swing": 1.0,
+    "weight_restore": 1.0,
+    "weight_push": 1.0,
     # Start-up
     "init_delay": 2.0,         # s standing still before walking
     # Yaw feedback: PI on the heading error, updated once per push stage (4 per cycle). It makes the stance feet slide
@@ -41,6 +48,14 @@ SEARCH_SPACE = {
     "lean_primary": (0.0, 40.0),
     "lean_secondary": (0.0, 25.0),
     "finish_stages": (0.0, 1.0),  # a switch: on from 0.5
+}
+
+# More parameters tune_gait.py can search when asked to with --search (these are not in the default search)
+EXTRA_SEARCH_SPACE = {
+    "weight_lean": (0.2, 3.0),
+    "weight_swing": (0.2, 3.0),
+    "weight_restore": (0.2, 3.0),
+    "weight_push": (0.2, 3.0),
 }
 
 

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOSAC Teleoperation</title>
+<style>
+  :root {
+    --bg: #f3f4f6; --card: #ffffff; --ink: #14171a; --muted: #5b6570; --line: #d8dce1;
+    --accent: #1f6feb; --accent-ink: #ffffff; --stop: #c62828; --ok: #1a7f37; --warn: #a15c00; --bad: #c62828;
+    --robot: #2b3642; --robot-front: #1f6feb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1114; --card: #1a1d22; --ink: #eceef1; --muted: #9aa4af; --line: #2c3139;
+      --accent: #4c8dff; --accent-ink: #0b0d10; --stop: #ef5350; --ok: #3fb950; --warn: #e3a008; --bad: #ef5350;
+      --robot: #c4ccd5; --robot-front: #4c8dff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 560px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { font-size: 1.15rem; margin: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .pill { font-size: .85rem; padding: 4px 10px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
+
+  .dial { display: grid; justify-items: center; gap: 4px; }
+  .dial svg { width: min(100%, 260px); height: auto; }
+  .ring { fill: none; stroke: var(--line); stroke-width: 2; }
+  .tick { stroke: var(--line); stroke-width: 2; }
+  .tick-label { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+  .body { fill: var(--robot); } .leg { fill: var(--robot); opacity: .7; } .front { fill: var(--robot-front); }
+  #robot { transition: transform .12s linear; }
+  .heading { font-size: 2.4rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .position { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .state { color: var(--muted); min-height: 1.4em; text-align: center; }
+
+  .controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .controls button {
+    min-height: 92px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    font: inherit; font-weight: 600; cursor: pointer; display: grid; place-items: center; gap: 2px; padding: 8px;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  .controls button .icon { font-size: 1.7rem; line-height: 1; }
+  .controls button.forward { grid-column: 1 / -1; min-height: 72px; }
+  .controls button.hold.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .controls button.stop { color: var(--stop); border-color: var(--stop); }
+  .controls button.stop:active { background: var(--stop); color: var(--card); }
+  .controls button:focus-visible, input[type=range]:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: .9rem; margin: 12px 0 0; }
+  kbd { font: inherit; font-size: .85em; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+
+  .speed { display: grid; gap: 8px; }
+  .speed-row { display: flex; justify-content: space-between; gap: 12px; }
+  .speed output { font-variant-numeric: tabular-nums; color: var(--muted); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>MOSAC Teleoperation</h1>
+    <span id="link" class="pill warn" role="status">Connecting…</span>
+  </header>
+
+  <section class="card dial" aria-label="Robot heading">
+    <svg viewBox="0 0 200 200" role="img" aria-label="Top view of the robot, rotated to its heading">
+      <circle class="ring" cx="100" cy="100" r="92"/>
+      <line class="tick" x1="100" y1="8" x2="100" y2="20"/>
+      <line class="tick" x1="8" y1="100" x2="20" y2="100"/>
+      <line class="tick" x1="192" y1="100" x2="180" y2="100"/>
+      <line class="tick" x1="100" y1="192" x2="100" y2="180"/>
+      <text class="tick-label" x="100" y="34">0°</text>
+      <text class="tick-label" x="34" y="104">90°</text>
+      <text class="tick-label" x="166" y="104">−90°</text>
+      <text class="tick-label" x="100" y="174">180°</text>
+      <g id="robot" transform="rotate(0 100 100)">
+        <rect class="leg" x="58" y="64" width="18" height="12" rx="4"/>
+        <rect class="leg" x="124" y="64" width="18" height="12" rx="4"/>
+        <rect class="leg" x="58" y="124" width="18" height="12" rx="4"/>
+        <rect class="leg" x="124" y="124" width="18" height="12" rx="4"/>
+        <rect class="body" x="76" y="58" width="48" height="84" rx="12"/>
+        <polygon class="front" points="100,46 87,64 113,64"/>
+      </g>
+    </svg>
+    <div class="heading" id="heading">—</div>
+    <div class="position" id="position"></div>
+    <div class="state" id="state" aria-live="polite">Waiting for the robot</div>
+  </section>
+
+  <section class="card" aria-label="Controls">
+    <div class="controls">
+      <button class="hold forward" id="forward" type="button" aria-pressed="false"><span class="icon" aria-hidden="true">▲</span>Forward</button>
+      <button class="hold" id="left" type="button" aria-pressed="false"><span class="icon" aria-hidden="true">⟲</span>Yaw left</button>
+      <button class="stop" id="stop" type="button"><span class="icon" aria-hidden="true">■</span>Stop</button>
+      <button class="hold" id="right" type="button" aria-pressed="false"><span class="icon" aria-hidden="true">⟳</span>Yaw right</button>
+    </div>
+    <p class="hint">Hold a button to move, let go to stop. Keys: <kbd>↑</kbd> <kbd>W</kbd> forward, <kbd>←</kbd> <kbd>A</kbd> left,
+      <kbd>→</kbd> <kbd>D</kbd> right, <kbd>Space</kbd> stop. Forward with a yaw button walks a gentle curve. Switching between
+      walking and turning on the spot waits for the legs to re-centre.</p>
+  </section>
+
+  <section class="card speed">
+    <div class="speed-row"><label for="speed">Speed</label><output id="speed-out" for="speed">100%</output></div>
+    <input id="speed" type="range" min="10" max="100" step="5" value="100">
+  </section>
+  <noscript>This page needs JavaScript.</noscript>
+</main>
+
+<script>
+"use strict";
+const HEARTBEAT_MS = 100;   // a held turn is repeated this often; the robot stops by itself if the repeats stop
+const POLL_MS = 200;
+
+const $ = (id) => document.getElementById(id);
+const buttons = { forward: $("forward"), left: $("left"), right: $("right") };
+const stop = $("stop"), speed = $("speed");
+const inputs = new Map();   // what is held down: the pointer or key -> "forward" | "left" | "right"
+let timer = null;
+let status = null;          // last robot status
+let serverUp = false;
+
+// What the held inputs ask for. The speed slider scales both the stride and the turn.
+function message() {
+  const roles = new Set(inputs.values());
+  const scale = Number(speed.value) / 100;
+  const forward = roles.has("forward") ? scale : 0;
+  const turn = ((roles.has("left") ? 1 : 0) - (roles.has("right") ? 1 : 0)) * scale;
+  return forward === 0 && turn === 0 ? { cmd: "stop" } : { cmd: "drive", forward, turn };
+}
+
+async function send(body) {
+  try {
+    const response = await fetch("/api/command", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), keepalive: true,
+    });
+    serverUp = response.ok;
+  } catch (error) {
+    serverUp = false;
+  }
+  renderLink();
+}
+
+function showHeld() {
+  const roles = new Set(inputs.values());
+  for (const [role, button] of Object.entries(buttons)) {
+    button.classList.toggle("active", roles.has(role));
+    button.setAttribute("aria-pressed", String(roles.has(role)));
+  }
+}
+
+function press(id, role) {
+  if (inputs.get(id) === role) return;
+  inputs.set(id, role);
+  showHeld();
+  send(message());
+  if (timer === null) timer = setInterval(() => send(message()), HEARTBEAT_MS);
+}
+
+function release(id) {
+  if (!inputs.delete(id)) return;   // not held
+  showHeld();
+  if (inputs.size === 0) {
+    clearInterval(timer);
+    timer = null;
+    send({ cmd: "stop" });
+  } else {
+    send(message());
+  }
+}
+
+function releaseAll(force = false) {
+  const wasHeld = inputs.size > 0;
+  inputs.clear();
+  clearInterval(timer);
+  timer = null;
+  showHeld();
+  if (wasHeld || force) send({ cmd: "stop" });
+}
+
+// Buttons: pointer events cover mouse, touch and pen. The button keeps the pointer until it is released.
+for (const [role, button] of Object.entries(buttons)) {
+  button.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    button.setPointerCapture(event.pointerId);
+    press("pointer" + event.pointerId, role);
+  });
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    button.addEventListener(name, (event) => release("pointer" + event.pointerId));
+  }
+  button.addEventListener("contextmenu", (event) => event.preventDefault());
+}
+stop.addEventListener("click", () => releaseAll(true));
+
+// Keyboard
+const KEYS = { ArrowUp: "forward", KeyW: "forward", ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right" };
+addEventListener("keydown", (event) => {
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.code in KEYS) {
+    event.preventDefault();
+    press(event.code, KEYS[event.code]);
+  } else if (event.code === "Space" || event.code === "Escape") {
+    event.preventDefault();
+    releaseAll(true);
+  }
+});
+addEventListener("keyup", (event) => {
+  if (event.code in KEYS) release(event.code);
+});
+
+// Letting go of the page must never leave the robot moving.
+addEventListener("blur", () => releaseAll());
+addEventListener("pagehide", () => releaseAll());
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
+
+speed.addEventListener("input", () => {
+  renderSpeed();
+  if (inputs.size > 0) send(message());
+});
+
+// Display
+function setText(element, text) {   // the state line is a live region: only touch it when it changes
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function renderSpeed() {
+  const percent = Number(speed.value);
+  const full = status?.max_rate_deg_s;
+  setText($("speed-out"), full ? `${percent}% · turning ${(full * percent / 100).toFixed(1)}°/s` : `${percent}%`);
+}
+
+function renderLink() {
+  const pill = $("link");
+  let text, level;
+  if (!serverUp) [text, level] = ["Server unreachable", "bad"];
+  else if (status === null) [text, level] = ["No robot", "warn"];
+  else [text, level] = ["Robot connected", "ok"];
+  pill.textContent = text;
+  pill.className = "pill " + level;
+}
+
+function describe(s) {
+  const turning = Math.abs(s.rate_deg_s) >= 0.2
+    ? `turning ${s.rate_deg_s > 0 ? "left" : "right"} at ${Math.abs(s.rate_deg_s).toFixed(1)}°/s` : "";
+  if (s.mode === "walk") {
+    const stride = s.forward < 0.995 ? ` (stride ${Math.round(s.forward * 100)}%)` : "";
+    return `Walking forward${stride}${turning ? ", " + turning : ""}`;
+  }
+  if (s.mode === "turn") return turning ? `Turning on the spot, ${turning.replace("turning ", "")}` : "Turning on the spot";
+  if (!s.idle) return "Stopping, legs re-centring";
+  return "Standing";
+}
+
+const signed = (value, digits) => `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(digits)}`;
+
+function render(state) {
+  status = state.connected ? state.robot : null;
+  renderLink();
+  renderSpeed();
+  if (!status) {
+    setText($("heading"), "—");
+    setText($("position"), "");
+    setText($("state"), state.robot
+      ? "The robot stopped reporting. Is the simulation paused?"
+      : "Waiting for the robot. Open Webots/worlds/MOSAC_REAL_V4_teleop.wbt.");
+    return;
+  }
+  const yaw = status.yaw_deg;
+  setText($("heading"), `${signed(yaw, 1)}°`);
+  setText($("position"), status.x_m === undefined ? "" : `x ${signed(status.x_m, 2)} m · y ${signed(status.y_m, 2)} m`);
+  $("robot").setAttribute("transform", `rotate(${-yaw} 100 100)`);   // counter-clockwise is positive, as in the world
+  setText($("state"), describe(status));
+}
+
+async function poll() {
+  try {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    serverUp = response.ok;
+    if (serverUp) render(await response.json());
+  } catch (error) {
+    serverUp = false;
+    status = null;
+    setText($("state"), "Cannot reach the Teleoperation server.");
+  }
+  renderLink();
+}
+
+renderSpeed();
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

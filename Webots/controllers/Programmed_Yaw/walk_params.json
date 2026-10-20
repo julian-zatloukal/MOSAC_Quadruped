@@ -1,0 +1,11 @@
+{
+  "gait_period": 1.763,
+  "parabola_length": 70.875,
+  "parabola_height": 10.63,
+  "weight_lean": 0.33,
+  "weight_swing": 1.0,
+  "weight_restore": 0.499,
+  "weight_push": 0.351,
+  "ramp_cycles": 2.0,
+  "turn_max": 0.07
+}

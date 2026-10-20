@@ -14,6 +14,7 @@ the outer side, and a sideways slide of the front feet against the rear feet. Th
 (abduction) joints, which the original gait never moves.
 """
 import math
+from bisect import bisect_right
 
 import numpy as np
 
@@ -30,6 +31,8 @@ STAGES = [
     ("lean", FR, FL), ("swing", BL, None), ("restore", FR, FL), ("push", None, None),
 ]
 PUSH_STAGES = tuple(i for i, s in enumerate(STAGES) if s[0] == "push")
+# Each kind of stage takes a share of the cycle proportional to its weight in the parameters. The original gait has them all equal.
+WEIGHT_KEYS = ("weight_lean", "weight_swing", "weight_restore", "weight_push")
 
 # Leg geometry from the CAD (mm, rad)
 L_FEMUR = 100.0
@@ -117,14 +120,57 @@ class GaitGenerator:
         self.lat = np.zeros(4)  # sideways offset of each foot in mm, positive towards +y
         self.swing_start = self.D1.copy()
         self.swing_start_lat = self.lat.copy()
+        self.landing = np.zeros(4)      # where each foot lands (D1, sideways offset), fixed when its swing starts
+        self.landing_lat = np.zeros(4)
+        self.targets = servo_angles(self.H, self.D1)
+        self.shoulder_targets = np.zeros(4)
+        self._timing()
+
+    def _timing(self):
+        """Where each stage starts and how much of the cycle it takes, from the stage weights of the parameters."""
+        self._weights = tuple(self.p[k] for k in WEIGHT_KEYS)
+        weight = dict(zip(("lean", "swing", "restore", "push"), self._weights))
+        w = np.array([weight[kind] for kind, _, _ in STAGES], dtype=float)
+        self._width = w / w.sum()                           # fraction of the cycle
+        self._edges = [0.0] + (np.cumsum(w) / w.sum())[:-1].tolist()  # where each stage starts
+
+    def _locate(self, phase):
+        """(stage, progress 0..1 in it) at this fraction of the cycle."""
+        stage = min(bisect_right(self._edges, phase) - 1, NUM_STAGES - 1)
+        return stage, (phase - self._edges[stage]) / self._width[stage]
+
+    def stand(self):
+        """Standing pose with every foot at the centre of its stride, which is where a turn on the spot leaves them. The
+        walking start pose staggers the feet instead, so the first swings of a turn that starts from it are longer in one
+        direction than in the other."""
+        self.H[:] = self.p["standing_height"]
+        self.D1[:] = 0.0
+        self.lat[:] = 0.0
+        self.swing_start = self.D1.copy()
+        self.swing_start_lat = self.lat.copy()
         self.targets = servo_angles(self.H, self.D1)
         self.shoulder_targets = np.zeros(4)
 
-    def set_twist(self, omega, vy=0.0):
+    def use_params(self, params):
+        """Carry on with other gait parameters (for instance a faster period and a lower foot lift for turning on the spot).
+        Call it while the feet are centred and the stride is zero, at a stage boundary, which is where a stopped TurnController
+        leaves the gait: the stage and the progress in it are kept, so the pose does not change. That only holds if the
+        standing height and the lean are the same in both sets. The stage weights may differ."""
+        for key in ("standing_height", "lean_primary", "lean_secondary"):
+            if params[key] != self.p[key]:
+                raise ValueError(f"cannot switch gait parameters: {key} differs ({self.p[key]} -> {params[key]})")
+        stage, progress = self._locate(self.phase)
+        self.p = params
+        self._timing()
+        self.t = (self._edges[stage] + progress * self._width[stage]) * params["gait_period"]
+
+    def set_twist(self, omega, vy=0.0, forward=1.0):
         """Make the stance feet slide as for a body turning omega rad per cycle (positive = to the left) while moving
-        vy mm per cycle sideways. Takes effect from the next step; the feet keep their positions until then."""
+        vy mm per cycle sideways and forward * parabola_length mm per cycle forward (1 = the normal walk, 0 = on the spot,
+        negative = backwards). Takes effect from the next push stage and from the next swing; the stage that is
+        running keeps its landing point, so it can be called at any time."""
         L = self.p["parabola_length"]
-        self.stride_scale[:] = 1 - omega * FOOT_Y / L
+        self.stride_scale[:] = forward - omega * FOOT_Y / L
         self.stride_y[:] = vy + omega * FOOT_X
 
     @property
@@ -133,12 +179,12 @@ class GaitGenerator:
 
     def step(self):
         p = self.p
-        N = NUM_STAGES
-        phase = self.phase
-        stage = min(int(phase * N), N - 1)
-        prog = phase * N - stage  # 0..1 within the stage
+        if self._weights != tuple(p[k] for k in WEIGHT_KEYS):
+            self._timing()
+        stage, prog = self._locate(self.phase)  # prog is 0..1 within the stage
+        stage_time = p["gait_period"] * self._width[stage]
         if p["finish_stages"]:
-            prog = min(1.0, prog + self.dt * N / p["gait_period"])
+            prog = min(1.0, prog + self.dt / stage_time)
 
         kind, leg, other = STAGES[stage]
         if stage != self.stage:
@@ -149,6 +195,8 @@ class GaitGenerator:
                 else:  # original behaviour: every swing starts from the nominal rear end of the stride
                     self.swing_start[leg] = self.stride_scale[leg] * p["parabola_length"] / 2
                 self.swing_start_lat[leg] = self.lat[leg]
+                self.landing[leg] = -self.stride_scale[leg] * p["parabola_length"] / 2
+                self.landing_lat[leg] = self.stride_y[leg] / 2
 
         standing = p["standing_height"]
         if kind == "lean":
@@ -159,12 +207,10 @@ class GaitGenerator:
             self.H[other] = standing - p["lean_secondary"] * (1 - prog)
         elif kind == "swing":
             self.H[leg] = standing - p["parabola_height"] * (1 - 4*(0.5 - prog)**2)
-            landing = -self.stride_scale[leg] * p["parabola_length"] / 2
-            self.D1[leg] = self.swing_start[leg] + (landing - self.swing_start[leg]) * prog
-            landing_lat = self.stride_y[leg] / 2
-            self.lat[leg] = self.swing_start_lat[leg] + (landing_lat - self.swing_start_lat[leg]) * prog
+            self.D1[leg] = self.swing_start[leg] + (self.landing[leg] - self.swing_start[leg]) * prog
+            self.lat[leg] = self.swing_start_lat[leg] + (self.landing_lat[leg] - self.swing_start_lat[leg]) * prog
         else:  # push: every foot slides back by a quarter of its stride, and sideways by a quarter of its sideways stride
-            share = (self.dt / p["gait_period"]) * N / 4
+            share = self.dt / stage_time / 4
             self.D1 += self.stride_scale * p["parabola_length"] * share
             self.lat -= self.stride_y * share
 
@@ -172,6 +218,11 @@ class GaitGenerator:
         # A foot offset sideways by lat tilts the leg plane out by the shoulder angle; the leg keeps its height H
         self.shoulder_targets = np.arctan2(self.lat, self.H)
         self.targets = servo_angles(np.hypot(self.H, self.lat), self.D1)
+
+    @property
+    def push_time(self):
+        """Seconds one push stage takes."""
+        return self.p["gait_period"] * self._width[PUSH_STAGES[0]]
 
     def push_just_finished(self, previous_stage):
         """True on the first step after a push stage ended (previous_stage is the value of .stage before step())."""

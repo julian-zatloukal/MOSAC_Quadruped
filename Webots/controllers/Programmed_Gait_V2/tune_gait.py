@@ -34,7 +34,7 @@ from scipy.stats import qmc
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from gait_config import DEFAULTS, SEARCH_SPACE, load_params  # noqa: E402
+from gait_config import DEFAULTS, EXTRA_SEARCH_SPACE, SEARCH_SPACE, load_params  # noqa: E402
 from gait_core import GaitInfeasible, analyse  # noqa: E402
 
 DEFAULT_WORLD = os.path.join(HERE, "..", "..", "worlds", "MOSAC_REAL_V4_gait_v2.wbt")
@@ -110,10 +110,10 @@ def offline_check(cfg, params):
     """Checks that need no simulation. Returns (penalty, message); penalty > 0 means a limit is violated."""
     penalty = 0.0
     try:
-        a = analyse(params, cycles=1.0)
+        a = analyse(params, cycles=cfg["check_cycles"])
         if yaw_enabled(params):  # the yaw loop may stretch the stride of one side and shift the feet sideways
             for omega in (params["yaw_max"], -params["yaw_max"]):
-                analyse(params, cycles=1.0, omega=omega)
+                analyse(params, cycles=cfg["check_cycles"], omega=omega)
     except GaitInfeasible as error:
         return 5.0, str(error)
     messages = []
@@ -164,10 +164,10 @@ def evaluate(cfg, params, measure_s=None):
 class Objective:
     """What differential evolution minimises. A class so that it can be pickled for the worker processes."""
 
-    def __init__(self, cfg, base):
+    def __init__(self, cfg, base, names):
         self.cfg = cfg
         self.base = base
-        self.names = list(SEARCH_SPACE)
+        self.names = list(names)
 
     def params(self, x):
         values = {n: (bool(v >= 0.5) if isinstance(DEFAULTS[n], bool) else float(v)) for n, v in zip(self.names, x)}
@@ -196,7 +196,7 @@ def build_cfg(args):
         "warmup_s": args.warmup_s, "measure_s": args.measure_s, "timeout": args.timeout, "keep_trials": args.keep_trials,
         # Limits. The original gait's joint envelope is what the hardware has already executed.
         "max_joint_speed": args.max_joint_speed, "max_torque": args.max_torque, "tilt_limit": args.tilt_limit,
-        "range_margin": args.range_margin,
+        "range_margin": args.range_margin, "check_cycles": args.check_cycles,
         "envelope_min": baseline["joint_min_deg"].tolist(), "envelope_max": baseline["joint_max_deg"].tolist(),
         # Score weights
         "w_lateral": args.w_lateral, "w_yaw": args.w_yaw, "w_tilt": args.w_tilt, "tilt_ok": args.tilt_ok,
@@ -222,6 +222,12 @@ def main():
     ap.add_argument("--world", default=DEFAULT_WORLD)
     ap.add_argument("--base", default=None, help="parameter file with the values that are not searched "
                     "(yaw gains, finish_stages...). Default: gait_params.json if it exists")
+    ap.add_argument("--search", nargs="+", metavar="NAME", default=None, help="parameters to search (default: "
+                    + " ".join(SEARCH_SPACE) + "; also possible: " + " ".join(EXTRA_SEARCH_SPACE) + ")")
+    ap.add_argument("--set", nargs="+", metavar="NAME=VALUE", default=[], help="override values of the base parameters, "
+                    "for instance finish_stages=true")
+    ap.add_argument("--range", nargs="+", metavar="NAME=LOW:HIGH", default=[], help="search range of a parameter, "
+                    "for instance parabola_height=8:16 (the defaults are in gait_config.py)")
     ap.add_argument("--workers", type=int, default=3, help="Webots instances in parallel")
     ap.add_argument("--init-size", type=int, default=32, help="initial population (power of 2 works best)")
     ap.add_argument("--maxiter", type=int, default=15, help="generations")
@@ -233,6 +239,8 @@ def main():
     ap.add_argument("--timeout", type=float, default=300, help="seconds of wall time allowed per simulation")
     ap.add_argument("--keep-trials", action="store_true", help="keep the folder (log, result) of every simulation")
     g = ap.add_argument_group("limits")
+    g.add_argument("--check-cycles", type=float, default=1.0, help="gait cycles the offline joint speed check runs for. "
+                   "The start of a walk is gentler than the steady state: use 3 to judge the steady state")
     g.add_argument("--max-joint-speed", type=float, default=350.0, help="deg/s over 50 ms. The motor model of "
                    "MOSAC_Controller (8.4 V / KM) has a no-load speed of ~490 deg/s; 350 leaves room for load")
     g.add_argument("--max-torque", type=float, default=5.0, help="N.m, 99th percentile. The same motor model stalls at ~5.7")
@@ -247,18 +255,33 @@ def main():
 
     cfg = build_cfg(args)
     base = load_params(args.base) if args.base else load_params()
+    for item in args.set:
+        name, _, value = item.partition("=")
+        if name not in DEFAULTS:
+            ap.error(f"--set: unknown parameter {name}")
+        base[name] = json.loads(value)
+    space = {**SEARCH_SPACE, **EXTRA_SEARCH_SPACE}
+    for item in args.range:
+        name, _, bounds = item.partition("=")
+        low, _, high = bounds.partition(":")
+        if name not in DEFAULTS or not low or not high:
+            ap.error(f"--range: expected NAME=LOW:HIGH with a known parameter, got {item}")
+        space[name] = (float(low), float(high))
+    names = args.search or list(SEARCH_SPACE)
+    for name in names:
+        if name not in space:
+            ap.error(f"--search: {name} cannot be searched; choose from {list(space)}")
 
     if args.evaluate:
         rows = []
         for source in args.evaluate:
-            params = load_params(source)
+            params = dict(load_params(source), **{k: base[k] for k in (item.partition("=")[0] for item in args.set)})
             rows.append((os.path.basename(source), evaluate(cfg, params)))
         print_table(rows)
         return
 
-    objective = Objective(cfg, base)
-    names = objective.names
-    bounds = [SEARCH_SPACE[n] for n in names]
+    objective = Objective(cfg, base, names)
+    bounds = [space[n] for n in names]
     lo, hi = np.array(bounds).T
     init = qmc.scale(qmc.Sobol(len(names), seed=args.seed).random(args.init_size), lo, hi)
     init[0] = np.clip([float(base[n]) for n in names], lo, hi)  # the current parameters are always a candidate
