@@ -1,0 +1,14 @@
+{
+  "gait_period": 4.078,
+  "standing_height": 149.805,
+  "parabola_height": 21.731,
+  "parabola_length": 90.771,
+  "lean_primary": 34.296,
+  "lean_secondary": 8.733,
+  "finish_stages": false,
+  "init_delay": 2.0,
+  "yaw_kp": 1.2,
+  "yaw_ki": 0.12,
+  "yaw_max": 0.2,
+  "yaw_ref_deg": 0.0
+}

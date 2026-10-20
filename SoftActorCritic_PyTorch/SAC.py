@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from ReplayBuffer import ReplayBuffer
-from Networks import Q_Network, P_Network
+from Networks import Q_Network, P_Network, data_type
 
 import copy
 
@@ -33,7 +33,7 @@ class SAC_Agent():
         self.P_net = P_Network(self.environment.obs_dim, self.environment.act_dim, pref_dim, hidden1_dim=64, hidden2_dim=32,
                                alfa=0.0003, beta1=0.9, beta2=0.999)
 
-        self.P_loss = torch.tensor(0, dtype=torch.float64).to(self.P_net.device)
+        self.P_loss = torch.tensor(0, dtype=data_type).to(self.P_net.device)
 
         self.Q1_net = Q_Network(self.environment.obs_dim, self.environment.act_dim, pref_dim, hidden1_dim=128, hidden2_dim=64, hidden3_dim=32,
                                   alfa=0.0003, beta1=0.9, beta2=0.999, name='Q1_net')
@@ -41,7 +41,7 @@ class SAC_Agent():
         self.Q2_net = Q_Network(self.environment.obs_dim, self.environment.act_dim, pref_dim, hidden1_dim=128, hidden2_dim=64, hidden3_dim=32,
                                   alfa=0.0003, beta1=0.9, beta2=0.999, name='Q2_net')
 
-        self.Q_loss = torch.tensor(0, dtype=torch.float64).to(self.Q1_net.device)
+        self.Q_loss = torch.tensor(0, dtype=data_type).to(self.Q1_net.device)
 
         # Create target networks with different names and directories
 
@@ -55,12 +55,12 @@ class SAC_Agent():
 
         self.target_entropy = -self.environment.act_dim
 
-        self.entropy = torch.tensor(0, dtype=torch.float64).to(self.P_net.device)
+        self.entropy = torch.tensor(0, dtype=data_type).to(self.P_net.device)
 
-        self.std = torch.tensor(0, dtype=torch.float64).to(self.P_net.device)
+        self.std = torch.tensor(0, dtype=data_type).to(self.P_net.device)
 
         # Create entropy temperature coefficient, we store log_alpha and use log_alpha.exp() when needed to force alpha to be always positive
-        self.log_alpha = torch.tensor(np.log(0.1), dtype=torch.float64).to(self.P_net.device)   #Initial alpha of 0.1
+        self.log_alpha = torch.tensor(np.log(0.1), dtype=data_type).to(self.P_net.device)   #Initial alpha of 0.1
         self.log_alpha.requires_grad = True
 
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=0.0003, betas=(0.9, 0.999))
@@ -80,8 +80,8 @@ class SAC_Agent():
 
     def choose_action(self, state_numpy, pref_numpy, random = True, tensor = False):
 
-        state = torch.tensor(np.expand_dims(state_numpy, axis=0)).to(self.P_net.device)
-        pref = torch.tensor(pref_numpy).to(self.P_net.device)
+        state = torch.tensor(np.expand_dims(state_numpy, axis=0), dtype=data_type).to(self.P_net.device)
+        pref = torch.tensor(pref_numpy, dtype=data_type).to(self.P_net.device)
 
         if random:
             actions,_,_ = self.P_net.sample_normal(state, pref, reparameterize=False)
@@ -142,7 +142,8 @@ class SAC_Agent():
         self.Q2_net.load_checkpoint(episode)
         self.Q1_target_net.load_checkpoint(episode)
         self.Q2_target_net.load_checkpoint(episode)
-        self.log_alpha = torch.load('./Train/Networks/alpha_episode_{0:07d}.pt'.format(episode))
+        # Checkpoints saved before the switch to float32 hold a float64 alpha
+        self.log_alpha = torch.load('./Train/Networks/alpha_episode_{0:07d}.pt'.format(episode)).detach().to(data_type).requires_grad_(True)
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=0.0003, betas=(0.9, 0.999))
 
     def learn(self, step):
@@ -151,12 +152,12 @@ class SAC_Agent():
         state, action, partial_rewards, pref, next_state, done_flag = self.replay_buffer.sample(self.replay_batch_size)
 
         #Convert np.arrays to tensors in GPU
-        state = torch.tensor(state, dtype=torch.float64).to(self.P_net.device)
-        action = torch.tensor(action, dtype=torch.float64).to(self.P_net.device)
-        pref = torch.tensor(pref, dtype=torch.float64).to(self.P_net.device)
-        next_state = torch.tensor(next_state, dtype=torch.float64).to(self.P_net.device)
-        partial_rewards = torch.tensor(partial_rewards, dtype=torch.float64).to(self.P_net.device)
-        done_flag = torch.tensor(done_flag, dtype=torch.float64).to(self.P_net.device)
+        state = torch.tensor(state, dtype=data_type).to(self.P_net.device)
+        action = torch.tensor(action, dtype=data_type).to(self.P_net.device)
+        pref = torch.tensor(pref, dtype=data_type).to(self.P_net.device)
+        next_state = torch.tensor(next_state, dtype=data_type).to(self.P_net.device)
+        partial_rewards = torch.tensor(partial_rewards, dtype=data_type).to(self.P_net.device)
+        done_flag = torch.tensor(done_flag, dtype=data_type).to(self.P_net.device)
 
         #Recompute the total reward based on the random preferences (linear combination)
         #the "paws", "ommited step" and "not flipping reward" are not weighted by a preference so they are added afterwards

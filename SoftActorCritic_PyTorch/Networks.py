@@ -6,7 +6,7 @@ import torch.optim as optim
 from torch.distributions.normal import Normal
 import numpy as np
 
-data_type = torch.float64
+data_type = torch.float32
 
 class Q_Network(nn.Module):
     def __init__(self, obs_dim, actions_dim, pref_dim, hidden1_dim, hidden2_dim, hidden3_dim, alfa, beta1, beta2, name='Q_net', chkpt_dir = './Train/Networks'):

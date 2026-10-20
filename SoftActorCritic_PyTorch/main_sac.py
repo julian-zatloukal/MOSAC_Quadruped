@@ -1,11 +1,13 @@
 import numpy as np
 import torch
 from SAC import SAC_Agent
+from Networks import data_type as torch_data_type
 from Environment import Environment
 from TrainHistory import TrainHistory
 
 import multiprocessing
 import queue
+from concurrent.futures import ThreadPoolExecutor
 import pyqtgraph as pg
 
 import sys
@@ -18,8 +20,7 @@ import atexit  # For saving before termination
 data_type = np.float64
 
 # Handler to run if the python process is terminated with keyboard interrupt, or if the socket doesn't respond (simulator or the real robot)
-# IMPORTANT:   -If you want to intentionally interrupt the python process, do so only when the agent is interacting with the environment and not when it is learning
-#               otherwise the networks will be saved in an incomplete state.
+# IMPORTANT:   -The process waits for the learning thread to finish its current updates before saving, so the networks are never saved in an incomplete state.
 #              -If intentionally interrupted, the script takes time to save the training history, so don't close the console window right away
 
 
@@ -29,6 +30,11 @@ def exit_handler(agent, train_history):
     agent.replay_buffer.save(train_history.episode)
 
     train_history.save()
+
+def learn_episode(agent, ep_len):
+    # One update for every step made in the episode
+    for step in range(ep_len):
+        agent.learn(step)
 
 def testing_step(agent, pref):
 
@@ -156,6 +162,12 @@ def SAC_Agent_Training(q):
     if test_agent == False:
         atexit.register(exit_handler, agent, train_history)
 
+    # The agent learns in a background thread while the next episode is simulated.
+    # 2 threads are as fast as 4 for these network sizes, and leave more cores to the simulator
+    torch.set_num_threads(2)
+    learner = ThreadPoolExecutor(max_workers=1)
+    learning = None
+
     while train_history.episode <= episodes:
 
         print("Episode: ", train_history.episode, flush=True)
@@ -214,7 +226,7 @@ def SAC_Agent_Training(q):
         # Real return (undiscounted for testing, discounted for training):
         # Auxiliary array for computing return without overwriting tot_rwd
         aux_ret = np.copy(tot_rwd)
-        pref_tensor = torch.tensor(pref, dtype=torch.float64).to(agent.P_net.device)
+        pref_tensor = torch.tensor(pref, dtype=torch_data_type).to(agent.P_net.device)
 
         # If the episode ended because the agent reached the maximum steps allowed, the rest of the return is estimated with the Q function
         # Using the last state, and last action that the policy would have chosen in that state
@@ -241,24 +253,30 @@ def SAC_Agent_Training(q):
             q.put((test_agent, ep_obs[0:ep_len+1], tot_rwd[0:ep_len+1],ep_rwd[0:ep_len+1],  ep_act[0:ep_len+1]))
 
         else:
+            # Wait for the updates of the previous episode, which ran while this episode was simulated
+            if learning is not None:
+                learning.result()
+
             # Expected return at the start of the episode:
-            initial_state = torch.tensor(np.expand_dims(ep_obs[0][:env.obs_dim], axis=0), dtype=torch.float64).to(agent.P_net.device)
-            initial_action = torch.tensor(np.expand_dims(ep_act[0], axis=0), dtype=torch.float64).to(agent.P_net.device)
-            train_history.ep_ret[train_history.episode, 1] = agent.minimal_Q(initial_state, initial_action, pref_tensor).detach().cpu().numpy().reshape(-1)
+            initial_state = torch.tensor(np.expand_dims(ep_obs[0][:env.obs_dim], axis=0), dtype=torch_data_type).to(agent.P_net.device)
+            initial_action = torch.tensor(np.expand_dims(ep_act[0], axis=0), dtype=torch_data_type).to(agent.P_net.device)
+            train_history.ep_ret[train_history.episode, 1] = agent.minimal_Q(initial_state, initial_action, pref_tensor).item()
 
             # Root mean square error
             train_history.ep_ret[train_history.episode, 2] = np.sqrt(np.square(train_history.ep_ret[train_history.episode, 0] - train_history.ep_ret[train_history.episode, 1]))
 
-            ######### Train the agent with batch_size samples for every step made in the episode ##########
-            for step in range(ep_len):
-                agent.learn(step)
-
             # Store the results of the episodes for plotting and printing on the console
+            # (this episode's updates haven't run yet, so these come from the previous episode's updates)
             train_history.ep_loss[train_history.episode,0] = agent.Q_loss.item()
             train_history.ep_loss[train_history.episode,1] = agent.P_loss.item()
             train_history.ep_alpha[train_history.episode] = agent.log_alpha.exp().item()
             train_history.ep_entropy[train_history.episode] = agent.entropy.item()
             train_history.ep_std[train_history.episode] = agent.std.item()
+
+            ######### Train the agent with batch_size samples for every step made in the episode ##########
+            # The updates run in the background while the next episode is simulated, so the policy is updated
+            # while it acts (as in standard SAC)
+            learning = learner.submit(learn_episode, agent, ep_len)
 
             print("Replay_Buffer_counter: ", agent.replay_buffer.mem_counter, flush=True)
             print("Q_loss: ", train_history.ep_loss[train_history.episode, 0], flush=True)
@@ -273,6 +291,7 @@ def SAC_Agent_Training(q):
 
             # Save the progress every save_period episodes, unless its being tested
             if train_history.episode % save_period == 0 or train_history.episode == 50:
+                learning.result()   # Save the networks with this episode's updates applied
                 agent.save_models(train_history.episode)
                 agent.replay_buffer.save(train_history.episode)
                 train_history.save()

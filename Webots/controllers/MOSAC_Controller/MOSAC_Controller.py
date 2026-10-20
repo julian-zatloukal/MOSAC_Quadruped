@@ -8,6 +8,7 @@ from controller import Supervisor
 import numpy as np
 from collections import deque
 import socket
+import math
 
 from scipy.spatial.transform import Rotation
 
@@ -70,6 +71,7 @@ critical_failure_angle = 50 #Must match angle in environment.py
 supervisor = Supervisor()
 root = supervisor.getSelf()
 robot_node = supervisor.getFromDef('MOSAC')
+rotation_field = robot_node.getField("rotation")   # Read every simulation step
 
 PFR_node = supervisor.getFromDef('PFR')
 PFL_node = supervisor.getFromDef('PFL')
@@ -107,6 +109,18 @@ def ypr_to_axis_angle(yaw, pitch, roll):
     axis = axis_angle / angle if angle != 0 else [1, 0, 0]  # Normalize axis
     
     return [axis[0], axis[1], axis[2], angle]
+
+def yaw_from_axis_angle(rotation):
+    # Same yaw as Rotation.from_rotvec(axis*angle).as_euler('zyx')[0], without scipy's overhead (called every simulation step)
+    x, y, z, angle = rotation
+    x, y, z = x*angle, y*angle, z*angle
+    theta = math.sqrt(x*x + y*y + z*z)
+    if theta == 0.0:
+        return 0.0
+    x, y, z = x/theta, y/theta, z/theta
+    c, s = math.cos(theta), math.sin(theta)
+    # yaw = atan2(-R[0][1], R[0][0]) of the rotation matrix
+    return math.atan2(s*z - (1-c)*x*y, c + (1-c)*x*x)
 
 
 robot_node.getField("translation").setSFVec3f([reset_pos[0],reset_pos[1],reset_pos[2]])
@@ -466,20 +480,21 @@ def EP_2_Euler321(Q):
 
     e = np.zeros(3)
 
-    e[0] = np.arctan2(2 * (q1 * q2 + q0 * q3), q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3)
-    e[1] = np.arcsin(-2 * (q1 * q3 - q0 * q2))
-    e[2] = np.arctan2(2 * (q2 * q3 + q0 * q1), q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3)
+    # math instead of numpy for scalars: same results, much less overhead (runs every simulation step)
+    e[0] = math.atan2(2 * (q1 * q2 + q0 * q3), q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3)
+    e[1] = math.asin(-2 * (q1 * q3 - q0 * q2))
+    e[2] = math.atan2(2 * (q2 * q3 + q0 * q1), q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3)
 
     return e
 
 
 def Euler321_2_EP(e):
-    c1 = np.cos(e[0] / 2)
-    s1 = np.sin(e[0] / 2)
-    c2 = np.cos(e[1] / 2)
-    s2 = np.sin(e[1] / 2)
-    c3 = np.cos(e[2] / 2)
-    s3 = np.sin(e[2] / 2)
+    c1 = math.cos(e[0] / 2)
+    s1 = math.sin(e[0] / 2)
+    c2 = math.cos(e[1] / 2)
+    s2 = math.sin(e[1] / 2)
+    c3 = math.cos(e[2] / 2)
+    s3 = math.sin(e[2] / 2)
 
     Q = np.zeros((4, 1))
 
@@ -492,11 +507,11 @@ def Euler321_2_EP(e):
 
 
 def Accel_2_Euler(ax, ay, az):
-    g = np.sqrt(np.power(ax, 2) + np.power(ay, 2) + np.power(az, 2))
+    g = math.sqrt(ax * ax + ay * ay + az * az)
 
-    theta = np.arcsin(ax / g)  # Rotation in y axis, estimator of pitch
+    theta = math.asin(ax / g)  # Rotation in y axis, estimator of pitch
 
-    phi = np.arctan2(-ay, -az)  # Rotation in x axis, estimator of roll
+    phi = math.atan2(-ay, -az)  # Rotation in x axis, estimator of roll
 
     angles = np.array([0, theta, phi])
 
@@ -876,18 +891,12 @@ def computeMeasurementsForRewards():
   ## Velocity of Robot
   world_velocity = root.getVelocity()
 
-  current_rotation = robot_node.getField("rotation").getSFRotation()
-  # Convert axis-angle to a rotation object
-  rotation = Rotation.from_rotvec(np.array(current_rotation[:3]) * current_rotation[3])
-  # Extract yaw, pitch, and roll (in radians)
-  current_rotation = rotation.as_euler('zyx', degrees=False)
-  
-  #print("Yaw", current_rotation[0]*180/np.pi)
+  yaw = yaw_from_axis_angle(rotation_field.getSFRotation())
 
-  A2[0] = np.cos(current_rotation[0])
-  A2[1] = np.sin(current_rotation[0])
+  #print("Yaw", yaw*180/np.pi)
 
-  #print("Yaw,pitch,roll",current_rotation[0],current_rotation[1],current_rotation[2])
+  A2[0] = np.cos(yaw)
+  A2[1] = np.sin(yaw)
 
   A_orth[0] = A2[1]
   A_orth[1] = -A2[0]
@@ -943,12 +952,10 @@ def computeTorques(target_servo):
     if enable_torque_control == 0:
        return
     
-    internal_angle_servo = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    internal_angle_servo = np.array([sensor.getValue() for sensor in joint_sensor])
 
-    for i in range(len(joint)):        
-      internal_angle_servo[i] = joint_sensor[i].getValue()
-      joint_angular_velocity_servo[i] = (internal_angle_servo[i] - prev_joint_angular_position_servo[i]) / (timestep * 1e-3)
-      prev_joint_angular_position_servo[i] = internal_angle_servo[i]
+    joint_angular_velocity_servo[:] = (internal_angle_servo - prev_joint_angular_position_servo) / (timestep * 1e-3)
+    prev_joint_angular_position_servo[:] = internal_angle_servo
 
     # PID control
     error_servo = target_servo - internal_angle_servo
@@ -967,15 +974,12 @@ def computeTorques(target_servo):
     ###############################################################################
 
     # Apply torque to joints
+    #Make sure the constant friction always opposes the motor's torque
+    friction_direction = np.where(VA < 0, -1, +1)
+    torque = VA*KM/RA - friction_direction*TF
     for i in range(len(joint)):
-      #Make sure the constant friction always opposes the motor's torque
-      if VA[i] < 0:
-        friction_direction = -1
-      else:
-        friction_direction = +1
-
-      joint[i].setTorque(VA[i]*KM/RA - friction_direction*TF)
-      #After computing the DC Motor Control, add noise for the rest of the controller 
+      joint[i].setTorque(torque[i])
+      #After computing the DC Motor Control, add noise for the rest of the controller
       #f_joint_angle[i] = f_joint_angle[i]+ np.random.normal(0,0.5,None)  #!(Optional noise)
 
 pid_out = 0
@@ -1038,16 +1042,14 @@ if __name__ == "__main__":
     if median_filter_delay > 0:
       median_filter_delay-=timestep
     if median_filter_delay == 0:
-      for i in range(len(joint)):
-        delay_buffer[i][1:]=  delay_buffer[i][0:-1] 
-        delay_buffer[i][0] = joint_sensor[i].getValue() * 180/np.pi
+      delay_buffer[:, 1:] = delay_buffer[:, :-1]
+      delay_buffer[:, 0] = [sensor.getValue() * 180/np.pi for sensor in joint_sensor]
       median_filter_delay = timestep
 
     if pid_timer > 0:
-      pid_timer-=timestep    
+      pid_timer-=timestep
     if pid_timer == 0:
-      for i in range(len(joint)):            
-        f_joint_angle[i] = delay_buffer[i][-1]
+      f_joint_angle[:] = delay_buffer[:, -1]
       PIDControl()
       pid_sample = 1
       pid_timer = 10

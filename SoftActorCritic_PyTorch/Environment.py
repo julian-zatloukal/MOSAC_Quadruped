@@ -65,6 +65,11 @@ class Environment:
         # Reward for not flipping over
         self.__not_flipping_reward = 0.2
 
+        # Penalty for flipping over (ends the episode). Almost every other reward is <= 0, so without a penalty that
+        # outweighs what the agent would collect by staying alive (~ -18 discounted for an untrained policy,
+        # gamma = 0.95) the best policy is to flip the robot on purpose, which ends the episode after 4 steps.
+        self.__flipping_penalty = -30
+
     def reset(self):
         ''' Generates and returns a new observed state for the environment (outside of the termination condition) '''
         # Start position in (0,0) and orientation (in z axis)
@@ -139,11 +144,11 @@ class Environment:
 
             '''Penalization for deviating from target step rotation'''
             # compute rotation made in one step:
-            agent_rotation = agent_yaw - agent_previous_yaw
+            agent_rotation = agent_yaw[i] - agent_previous_yaw[i]
             # correct if there are any discontinuities:
-            if (agent_yaw * agent_previous_yaw < 0) and (np.abs(agent_yaw) > 100*np.pi/180):
+            if (agent_yaw[i] * agent_previous_yaw[i] < 0) and (np.abs(agent_yaw[i]) > 100*np.pi/180):
 
-                if agent_yaw < 0:
+                if agent_yaw[i] < 0:
                     agent_rotation += 2*np.pi
                 else:
                     agent_rotation -= 2*np.pi
@@ -201,7 +206,7 @@ class Environment:
             
             # If the absolute value of X or Y angle is greater than 50° there is a penalization and the episode ends
             if abs(next_obs[i, 1])*180 >= 50 or abs(next_obs[i, 2])*180 >= 50:                
-                reward[i, 6] = 0
+                reward[i, 6] = self.__flipping_penalty
                 end[i] = True
 
             elif dist_fin[i] >= self.__end_cond:

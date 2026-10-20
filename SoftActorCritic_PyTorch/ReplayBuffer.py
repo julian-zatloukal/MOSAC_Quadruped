@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import threading
 
 class ReplayBuffer():
     def __init__(self, max_size, obs_dim, actions_dim, reward_dim, pref_max_vector, pref_min_vector):
@@ -15,31 +16,40 @@ class ReplayBuffer():
         self.pref_max_vector = pref_max_vector
         self.pref_min_vector = pref_min_vector
 
+        # Generator.choice samples without replacement without shuffling the whole buffer (np.random.choice does)
+        self.rng = np.random.default_rng()
+
+        # The agent learns in a background thread while new transitions are stored
+        self.lock = threading.Lock()
+
     def store(self, state, action, reward, next_state, done_flag):
         if self.mem_counter == self.mem_size:
             print("Replay Buffer max. size reached, overwriting buffer (circular)\n")
 
         index = self.mem_counter % self.mem_size
 
-        self.state_memory[index] = state
-        self.action_memory[index] = action
-        self.reward_memory[index] = reward
-        self.next_state_memory[index] = next_state
-        self.done_flag_memory[index] = done_flag
+        with self.lock:
+            self.state_memory[index] = state
+            self.action_memory[index] = action
+            self.reward_memory[index] = reward
+            self.next_state_memory[index] = next_state
+            self.done_flag_memory[index] = np.squeeze(done_flag)
 
-        self.mem_counter += 1
-    
+            self.mem_counter += 1
+
     def sample(self, batch_size):
-        max_mem = min(self.mem_counter, self.mem_size)
+        with self.lock:
+            max_mem = min(self.mem_counter, self.mem_size)
 
-        batch_index = np.random.choice(max_mem, batch_size, replace=False)
+            batch_index = self.rng.choice(max_mem, batch_size, replace=False)
 
-        states = self.state_memory[batch_index]
-        actions = self.action_memory[batch_index]
-        rewards = self.reward_memory[batch_index]
+            states = self.state_memory[batch_index]
+            actions = self.action_memory[batch_index]
+            rewards = self.reward_memory[batch_index]
+            next_states = self.next_state_memory[batch_index]
+            done_flags = self.done_flag_memory[batch_index]
+
         pref = np.random.random_sample((batch_size, self.pref_dim)) * (self.pref_max_vector-self.pref_min_vector) + self.pref_min_vector #To generate #batch_size vectors of #pref_dim random numbers between min and max values
-        next_states = self.next_state_memory[batch_index]
-        done_flags = self.done_flag_memory[batch_index]
 
         return states, actions, rewards, pref, next_states, done_flags
     

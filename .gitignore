@@ -10,7 +10,8 @@ Resultados*/
 ######## Webots ##############
 *.wbproj
 *.jpg
-
+tuning_runs/
+**/.DS_Store
 
 ######## Keil projects #######
 .gdb_history
