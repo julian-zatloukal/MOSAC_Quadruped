@@ -25,22 +25,29 @@ export function useFit() {
   return { fit, toggle }
 }
 
-// Safari before 16.4 has the prefixed Fullscreen API only (and the iPhone none at all).
+// Safari before 16.4 has the prefixed Fullscreen API only. The iPhone's Safari has none for a page (WebKit bug 206854 is still open),
+// so the button is not shown there; Android's Chrome, iPad and computers have it.
 interface PrefixedDocument extends Document {
   webkitFullscreenEnabled?: boolean
   webkitFullscreenElement?: Element | null
   webkitExitFullscreen?: () => void
 }
 interface PrefixedElement extends HTMLElement {
-  webkitRequestFullscreen?: () => void
+  webkitRequestFullscreen?: () => Promise<void> | void
 }
 
 const doc = document as PrefixedDocument
+const root = document.documentElement as PrefixedElement
 const isFullscreen = () => !!(doc.fullscreenElement ?? doc.webkitFullscreenElement)
+const request = root.requestFullscreen ?? root.webkitRequestFullscreen
+// The button is shown when the browser can do it here: the method exists and the browser does not say it is off (it does, for
+// one, in a frame that is not allowed to), and the page is not an installed app that already starts full screen (display:
+// fullscreen in the manifest that server.py serves).
+const capable = !!request && (doc.fullscreenEnabled ?? doc.webkitFullscreenEnabled) !== false
+const installedFullscreen = matchMedia('(display-mode: fullscreen)').matches
 
-// Full screen, where the browser allows it.
+// Full screen, where the browser has it.
 export function useFullscreen() {
-  const supported = !!(doc.fullscreenEnabled || doc.webkitFullscreenEnabled)
   const [active, setActive] = useState(isFullscreen)
 
   useEffect(() => {
@@ -54,9 +61,8 @@ export function useFullscreen() {
   }, [])
 
   const toggle = () => {
-    const root = document.documentElement as PrefixedElement
     if (isFullscreen()) (doc.exitFullscreen ?? doc.webkitExitFullscreen)?.call(doc)
-    else (root.requestFullscreen ?? root.webkitRequestFullscreen)?.call(root)
+    else request?.call(root)?.catch?.(() => {}) // the browser may say no
   }
-  return { supported, active, toggle }
+  return { available: capable && !installedFullscreen, active, toggle }
 }

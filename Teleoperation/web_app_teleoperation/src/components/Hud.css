@@ -12,5 +12,5 @@
 .tool:active { transform: scale(.93); }
 .tool svg { width: 19px; height: 19px; }
 @media (hover: hover) and (pointer: fine) {
-  .tool:hover { background-color: rgba(48, 52, 64, .6); }
+  .tool:hover { background-color: var(--panel-hover); }
 }

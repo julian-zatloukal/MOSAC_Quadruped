@@ -1,5 +1,6 @@
 /* The middle of the screen, until there is a picture */
-.veil { position: fixed; inset: 0; display: grid; place-content: center; pointer-events: none; transition: opacity .3s; }
+/* Centred, not across the screen: a fixed box at the edges would be one more for Safari 26 to colour its bars from */
+.veil { position: fixed; top: 50%; left: 50%; translate: -50% -50%; width: max-content; pointer-events: none; transition: opacity .3s; }
 .veil.gone { opacity: 0; }
 .veil-card {
   display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 22px 0 18px; border-radius: 999px; font-weight: 500;

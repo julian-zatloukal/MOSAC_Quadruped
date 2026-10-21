@@ -18,7 +18,7 @@ function DriveKey({ role, label, active, onPress, onRelease, children }: DriveKe
   const release = (event: PointerEvent) => onRelease(`pointer${event.pointerId}`)
   return (
     <button
-      className={active ? 'key glass active' : 'key glass'}
+      className={active ? 'key panel active' : 'key panel'}
       id={role}
       type="button"
       aria-label={label}

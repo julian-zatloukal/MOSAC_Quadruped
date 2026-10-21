@@ -22,7 +22,7 @@ export function Veil({ link, phase, robotConnected, unsupported }: VeilProps) {
   }
   return (
     <div className={live ? 'veil gone' : 'veil'} role="status" aria-live="polite">
-      <div className="veil-card glass">
+      <div className="veil-card panel">
         {text === null ? <div className="spinner" /> : <NoVideoIcon />}
         <span>{live ? '' : (text ?? 'Connecting…')}</span>
       </div>

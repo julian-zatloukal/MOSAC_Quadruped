@@ -27,6 +27,7 @@ import time
 
 import av
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
+from aiortc.exceptions import InvalidStateError
 from aiortc.mediastreams import VIDEO_TIME_BASE, MediaStreamError, MediaStreamTrack
 
 import protocol
@@ -185,6 +186,16 @@ class Busy(Exception):
     pass
 
 
+def _loop_exception(loop, context):
+    """aiortc connects in a task of its own. A page that leaves (or is dropped for taking too long) while that task is starting
+    closes the transport under it, and the task ends with InvalidStateError: "RTCIceTransport is closed", with nobody left to
+    retrieve it. That is a page going away, not an error; anything else goes to asyncio's usual report."""
+    error = context.get("exception")
+    if isinstance(error, InvalidStateError) and "closed" in str(error):
+        return
+    loop.default_exception_handler(context)
+
+
 class Pages:
     """The pages connected to the server."""
 
@@ -192,6 +203,7 @@ class Pages:
         """link: the RobotLink for the commands and the state. video: the VideoRelay."""
         self.link, self.video = link, video
         self.loop = asyncio.new_event_loop()
+        self.loop.set_exception_handler(_loop_exception)
         self._pages = set()
         self._thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self._thread.start()

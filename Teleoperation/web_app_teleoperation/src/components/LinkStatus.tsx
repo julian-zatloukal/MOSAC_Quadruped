@@ -89,7 +89,7 @@ export function LinkStatus({ link, robot, getStats }: LinkStatusProps) {
 
   const yaw = robot?.yaw_deg ?? 0
   return (
-    <div className="link glass" data-open={open} ref={root}>
+    <div className="link panel" data-open={open} ref={root}>
       <button className="link-head" type="button" aria-expanded={open} aria-controls="link-details" onClick={() => setOpen(!open)}>
         <span className={`dot ${dot}`} />
         <span>{label}</span>

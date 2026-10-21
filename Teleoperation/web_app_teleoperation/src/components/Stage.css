@@ -1,7 +1,10 @@
-/* The camera, behind everything */
-.stage { position: fixed; inset: 0; background: #000; }
+/* The camera, behind everything. Safari 26 colours its bars (the status bar, the toolbar) after the fixed boxes at the top and bottom
+   edges of the screen, and a transparent one there makes them clear glass over the picture; so the stage is the only fixed box at the
+   edges and its colour is black. It is not quite opaque on purpose: iOS 26.0 cut an opaque fixed box short at the toolbar, leaving a
+   gap below the picture (fixed in 26.1 for boxes the size of the viewport, but the next version should not depend on it). */
+.stage { position: fixed; inset: 0; background: rgba(0, 0, 0, .99); }
 .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .stage[data-fit="true"] video { object-fit: contain; }
-.shade { position: fixed; left: 0; right: 0; pointer-events: none; }
+.shade { position: absolute; left: 0; right: 0; pointer-events: none; }
 .shade.top { top: 0; height: 120px; background: linear-gradient(rgba(0, 0, 0, .42), transparent); }
 .shade.bottom { bottom: 0; height: min(42%, 280px); background: linear-gradient(transparent, rgba(0, 0, 0, .48)); }

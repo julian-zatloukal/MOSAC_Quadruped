@@ -18,7 +18,14 @@ Once:   cd Teleoperation/web_app_teleoperation && pnpm install && pnpm build    
 | **▲** (hold, left thumb) | walk forward, holding the heading. Keys: `↑` `W` |
 | **▼** (hold, left thumb) | walk backwards, holding the heading. Keys: `↓` `S` |
 | **⟲** / **⟳** (hold, right thumb) | yaw left / right: turn on the spot, or walk a gentle curve if ▲ or ▼ is held too. Keys: `←` `A` / `→` `D` |
-| top right | fill the screen with the video (cropped) or show the whole picture; full screen, where the browser allows it (not on iPhone) |
+| top right | fill the screen with the video (cropped) or show the whole picture; full screen, only where the browser can do it (computers, Android, iPad; not on an iPhone, see below) |
+
+The full screen button checks that the browser has the Fullscreen API before it shows itself, so Android's Chrome gets it. iPhone
+Safari has none for a page (WebKit bug 206854 is still open) and a page cannot hide the browser's bars there, so the button is
+not shown. Installed as an app, the page starts full screen by itself (`display: fullscreen` in the manifest the server serves at
+`/manifest.webmanifest`, and the button is hidden then, since there is nothing to add): on an iPhone, Share → Add to Home Screen
+(works over plain `http`); on Android, Chrome's Install app, which Chrome only offers over `https` or on `localhost` (over `http`
+on the network it can only add a shortcut, not installed and not tried here).
 
 There is no stop button and no speed setting: the robot stops when everything is let go, and always moves at full speed (the
 stride is 44.8 mm/s forward and 50.9 mm/s backwards, the turn 7.8 deg/s on the spot and 2.3 deg/s on a curve). Several buttons
@@ -106,16 +113,19 @@ and `src/components/` the React side.
   network drops, or the server is killed, the robot stops within 0.5 s (measured: 0.55 s). The server also
   sends a stop when it is shut down with Ctrl+C.
 - **The page lets go on its own** when the button, key or touch is released, the window loses focus, or the tab is hidden.
-- **Only this computer can reach the page** (`127.0.0.1`). There is no login, so `--host 0.0.0.0` lets anything on the network
-  drive the robot and watch its camera; do not use it on a network you do not trust. The request that sets up the connection
-  must be JSON, from the page's own origin, to the server's own host name, which keeps other websites open in your browser from
-  steering the robot or reading the camera. The connection's own UDP ports are not limited to this computer even then (the
-  browser connects to the computer's own address), but they only answer someone who has the secrets from that request.
+- **The page is open to the local network** (the server listens on every interface, and prints the address to open from a phone).
+  There is no login, so anyone on the network can drive the robot and watch its camera; do not run it on a network you do not
+  trust, or use `--host 127.0.0.1` to keep it to this computer. The request that sets up the connection must be JSON, from the
+  page's own origin, to one of the server's own names (`localhost`, this computer's name, or an IP address), which keeps other
+  websites open in your browser from steering the robot or reading the camera. The connection's own UDP ports are not limited to
+  this computer (the browser connects to the computer's own address), but they only answer someone who has the secrets from that
+  request.
 
 ## Options
 
 ```
-python3 server.py --host 0.0.0.0                                      for a phone on the same network: open http://<this computer's IP>:8000
+python3 server.py                                                     also for a phone on the same network: open the "local network" address it prints
+python3 server.py --host 127.0.0.1                                    this computer only
 python3 server.py --port 8001 --no-browser
 python3 server.py --robot-host 192.168.1.50 --status-bind 0.0.0.0     the robot's controller is on another computer
 ```
