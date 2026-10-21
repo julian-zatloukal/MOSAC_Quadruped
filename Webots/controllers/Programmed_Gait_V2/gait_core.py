@@ -8,10 +8,10 @@ It is the crawl gait of the original Programmed_Gait controller: 16 stages per c
 Each leg is described by H (hip-to-foot height) and D1 (foot offset from the hip, bigger = further back),
 both in mm, and inverse kinematics turns them into the femur and tibia servo angles.
 
-Differences with the original: the stage sequence is a table, every constant comes from gait_config, and the feet can be
-made to slide as for a turn (set_twist). With four feet planted, turning the body takes two things: a longer stride on
-the outer side, and a sideways slide of the front feet against the rear feet. The sideways slide is done by the shoulder
-(abduction) joints, which the original gait never moves.
+Differences with the original: the stage sequence is a table (a second one, in the reverse order, walks backwards), every
+constant comes from gait_config, and the feet can be made to slide as for a turn (set_twist). With four feet planted, turning
+the body takes two things: a longer stride on the outer side, and a sideways slide of the front feet against the rear feet. The
+sideways slide is done by the shoulder (abduction) joints, which the original gait never moves.
 """
 import math
 from bisect import bisect_right
@@ -31,6 +31,11 @@ STAGES = [
     ("lean", FR, FL), ("swing", BL, None), ("restore", FR, FL), ("push", None, None),
 ]
 PUSH_STAGES = tuple(i for i, s in enumerate(STAGES) if s[0] == "push")
+# Walking backwards (the backward parameter): the same groups of lean, swing, restore and push in the reverse order, so the feet
+# swing BL, FR, BR, FL. Played backwards in time, the forward gait is exactly this table with the swings carrying the feet back
+# and the pushes sliding them forward: every pose, and so every support polygon, is one the forward walk goes through. Walking
+# backwards with the forward order also works, but in Webots it tilted the body more (9.0 deg against 6.5).
+STAGES_BACKWARD = [s for group in range(NUM_STAGES - 4, -1, -4) for s in STAGES[group:group + 4]]
 # Each kind of stage takes a share of the cycle proportional to its weight in the parameters. The original gait has them all equal.
 WEIGHT_KEYS = ("weight_lean", "weight_swing", "weight_restore", "weight_push")
 
@@ -65,6 +70,11 @@ JOINT_NAMES = [
     "BR_servo_femur_joint", "BR_servo_tibia_joint",
     "FR_servo_femur_joint", "FR_servo_tibia_joint",
 ]
+
+
+def mirror_stage(stage):
+    """The stage of the other table (STAGES, STAGES_BACKWARD) of the same kind and legs."""
+    return NUM_STAGES - 4 - 4 * (stage // 4) + stage % 4
 
 
 class GaitInfeasible(ValueError):
@@ -110,13 +120,18 @@ class GaitGenerator:
     def __init__(self, params, dt=0.01):
         self.p = params
         self.dt = dt
-        self.stride_scale = np.ones(4)  # stride of each leg (BL, FL, BR, FR) as a fraction of parabola_length
+        self._stages = STAGES_BACKWARD if params["backward"] else STAGES
+        # stride of each leg (BL, FL, BR, FR) as a fraction of parabola_length, negative = backwards
+        self.stride_scale = np.full(4, self.direction)
         self.stride_y = np.zeros(4)     # sideways stride of each leg in mm per cycle, positive moves the body to +y
         self.t = 0.0
         self.stage = -1
         self.H = np.full(4, float(params["standing_height"]))
-        # Stagger the legs so that each one is at the rear end of its stride when its swing stage comes
-        self.D1 = -np.array([1.0, -2.0, -1.0, 0.0]) * params["parabola_length"] / 4
+        # Stagger the legs so that each one is at the end of its stride when its swing stage comes: the rear end when walking
+        # forward, the front end when walking backwards. The k-th leg to swing is k quarters of a stride from it.
+        self.D1 = np.empty(4)
+        for k, leg in enumerate(leg for kind, leg, _ in self._stages if kind == "swing"):
+            self.D1[leg] = self.direction * (2 - k) * params["parabola_length"] / 4
         self.lat = np.zeros(4)  # sideways offset of each foot in mm, positive towards +y
         self.swing_start = self.D1.copy()
         self.swing_start_lat = self.lat.copy()
@@ -130,7 +145,7 @@ class GaitGenerator:
         """Where each stage starts and how much of the cycle it takes, from the stage weights of the parameters."""
         self._weights = tuple(self.p[k] for k in WEIGHT_KEYS)
         weight = dict(zip(("lean", "swing", "restore", "push"), self._weights))
-        w = np.array([weight[kind] for kind, _, _ in STAGES], dtype=float)
+        w = np.array([weight[kind] for kind, _, _ in self._stages], dtype=float)
         self._width = w / w.sum()                           # fraction of the cycle
         self._edges = [0.0] + (np.cumsum(w) / w.sum())[:-1].tolist()  # where each stage starts
 
@@ -155,20 +170,35 @@ class GaitGenerator:
         """Carry on with other gait parameters (for instance a faster period and a lower foot lift for turning on the spot).
         Call it while the feet are centred and the stride is zero, at a stage boundary, which is where a stopped TurnController
         leaves the gait: the stage and the progress in it are kept, so the pose does not change. That only holds if the
-        standing height and the lean are the same in both sets. The stage weights may differ."""
+        standing height and the lean are the same in both sets. The stage weights and the direction may differ: a change of
+        direction carries on from the same stage of the other table (mirror_stage), which leans the same legs."""
         for key in ("standing_height", "lean_primary", "lean_secondary"):
             if params[key] != self.p[key]:
                 raise ValueError(f"cannot switch gait parameters: {key} differs ({self.p[key]} -> {params[key]})")
         stage, progress = self._locate(self.phase)
+        if params["backward"] != self.p["backward"]:
+            stage = mirror_stage(stage)
+            if self.stage >= 0:
+                self.stage = mirror_stage(self.stage)
+            self._stages = STAGES_BACKWARD if params["backward"] else STAGES
         self.p = params
         self._timing()
         self.t = (self._edges[stage] + progress * self._width[stage]) * params["gait_period"]
 
-    def set_twist(self, omega, vy=0.0, forward=1.0):
+    @property
+    def direction(self):
+        """1 for a gait that walks forward, -1 for one that walks backwards (the backward parameter)."""
+        return -1.0 if self.p["backward"] else 1.0
+
+    def set_twist(self, omega, vy=0.0, forward=None):
         """Make the stance feet slide as for a body turning omega rad per cycle (positive = to the left) while moving
         vy mm per cycle sideways and forward * parabola_length mm per cycle forward (1 = the normal walk, 0 = on the spot,
-        negative = backwards). Takes effect from the next push stage and from the next swing; the stage that is
-        running keeps its landing point, so it can be called at any time."""
+        negative = backwards; None = the full stride in the direction of the gait, see the backward parameter). The
+        swing order is made for one direction, so walk the other way only by changing the parameters (use_params).
+        Takes effect from the next push stage and from the next swing; the stage that is running keeps its landing
+        point, so it can be called at any time."""
+        if forward is None:
+            forward = self.direction
         L = self.p["parabola_length"]
         self.stride_scale[:] = forward - omega * FOOT_Y / L
         self.stride_y[:] = vy + omega * FOOT_X
@@ -186,7 +216,7 @@ class GaitGenerator:
         if p["finish_stages"]:
             prog = min(1.0, prog + self.dt / stage_time)
 
-        kind, leg, other = STAGES[stage]
+        kind, leg, other = self._stages[stage]
         if stage != self.stage:
             self.stage = stage
             if kind == "swing":

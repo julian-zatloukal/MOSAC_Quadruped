@@ -5,7 +5,8 @@ The search is scipy's differential evolution over SEARCH_SPACE (gait_config.py).
 deterministic, so the same parameters always give the same score.
 
 Score of a candidate that walks without falling (higher is better):
-    forward speed - w_lateral*|lateral speed| - w_yaw*|heading change rate| - w_tilt*(tilt above tilt_ok)
+    speed - w_lateral*|lateral speed| - w_yaw*|heading change rate| - w_tilt*(tilt above tilt_ok)
+where speed is forward, or backwards for a gait with backward=true (search one with --set backward=true).
 Candidates that fall, reach out of range, move the joints faster than a servo can follow (max_joint_speed),
 need more torque than the servo model delivers (max_torque) or tilt too much (tilt_limit) score below -1.
 
@@ -130,7 +131,7 @@ def offline_check(cfg, params):
     return penalty, "; ".join(messages)
 
 
-def score_result(cfg, r):
+def score_result(cfg, r, params):
     """Score of a simulation result (see the module docstring). Also returns a short status."""
     if not r.get("valid"):
         return -3.0, "failed: " + r.get("error", "?")
@@ -140,7 +141,7 @@ def score_result(cfg, r):
         return -1.0 - min(0.9, r["torque_p99"] / cfg["max_torque"] - 1), f"torque {r['torque_p99']:.1f} N.m"
     if r["tilt_max_deg"] > cfg["tilt_limit"]:
         return -1.0 - min(0.9, (r["tilt_max_deg"] - cfg["tilt_limit"]) / 20), f"tilt {r['tilt_max_deg']:.0f} deg"
-    s = r["v_forward"]
+    s = r["v_forward"] * (-1 if params["backward"] else 1)  # the robot starts facing +x
     s -= cfg["w_lateral"] * abs(r["v_lateral"])
     s -= cfg["w_yaw"] * abs(math.radians(r["yaw_change_deg"])) / r["window_s"]
     s -= cfg["w_tilt"] * max(0.0, r["tilt_max_deg"] - cfg["tilt_ok"])
@@ -153,7 +154,7 @@ def evaluate(cfg, params, measure_s=None):
     if penalty > 0:
         return {"score": -1.0 - min(0.9, penalty), "status": "limit: " + message, "simulated": False}
     result = run_webots(cfg, params, measure_s)
-    score, status = score_result(cfg, result)
+    score, status = score_result(cfg, result, params)
     out = {"score": score, "status": status, "simulated": True}
     out.update({k: v for k, v in result.items() if k not in ("trace", "params")})
     if "trace" in result:

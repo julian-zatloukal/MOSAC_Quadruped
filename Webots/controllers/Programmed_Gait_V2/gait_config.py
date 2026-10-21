@@ -28,6 +28,10 @@ DEFAULTS = {
     "weight_swing": 1.0,
     "weight_restore": 1.0,
     "weight_push": 1.0,
+    # True = walk backwards. The swings come in the reverse order (BL, FR, BR, FL instead of FL, BR, FR, BL), each still after
+    # the lean that is meant for it, and the feet swing back and push forward: the forward gait played backwards in time, so
+    # the feet pass through the same positions and the body is held up by the same support polygons as when walking forward.
+    "backward": False,
     # Start-up
     "init_delay": 2.0,         # s standing still before walking
     # Yaw feedback: PI on the heading error, updated once per push stage (4 per cycle). It makes the stance feet slide

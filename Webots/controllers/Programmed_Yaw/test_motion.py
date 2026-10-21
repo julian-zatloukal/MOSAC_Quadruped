@@ -1,8 +1,10 @@
-"""Offline checks of walking and of switching between walking and turning on the spot (MotionController). No Webots needed.
+"""Offline checks of walking (forward and backwards) and of switching between walking and turning on the spot
+(MotionController). No Webots needed.
 
-The robot is replaced by a model that turns (omega + a constant disturbance) / 4 per cycle in every push stage, so this checks
-the control logic: the stride ramps up and stops at once, the heading is held, the legs re-centre before the gait changes, and
-whatever is commanded, however fast, the joints never move much faster than in a steady walk.
+The robot is replaced by a model that turns (omega + a constant disturbance) / 4 per cycle in every push stage and moves by as
+much as the stance feet slide, so this checks the control logic: the stride ramps up and stops at once, the heading is held, the
+legs re-centre before the gait changes, and whatever is commanded, however fast, the joints never move much faster than in a
+steady walk.
 Usage: python test_motion.py
 """
 import math
@@ -17,7 +19,7 @@ sys.path.insert(0, HERE)
 
 from motion_core import add_walking, load_walk_params, WalkController  # noqa: E402
 from turn_core import TurnController, load_turn_params  # noqa: E402
-from gait_core import GaitGenerator, STAGES, peak_joint_speed  # noqa: E402  (turn_core puts Programmed_Gait_V2 on the path)
+from gait_core import BL, BR, FL, FR, GaitGenerator, STAGES, peak_joint_speed  # noqa: E402  (turn_core puts Programmed_Gait_V2 on the path)
 
 DT = 0.01
 
@@ -32,14 +34,20 @@ class Rig:
         self.motion = add_walking(self.gen, self.turner)
         self.disturbance = disturbance
         self.yaw = 0.0
+        self.travel = 0.0  # mm the body moved forward (negative = backwards)
         self.targets = [self.gen.targets.copy()]
+        self.swings = []   # legs in the order they swung
 
     def step(self):
         previous = self.gen.stage
         if not self.motion.idle:
+            feet = self.gen.D1.copy()
             self.gen.step()
             if STAGES[self.gen.stage][0] == "push":  # only the push stages move the body
                 self.yaw += (self.motion.active.omega + self.disturbance) / 4 * DT / self.gen.push_time
+                self.travel += float(np.mean(self.gen.D1 - feet))  # feet sliding back = body moving forward
+            if self.gen.stage != previous and STAGES[self.gen.stage][0] == "swing":
+                self.swings.append(self.gen._stages[self.gen.stage][1])
         self.motion.update(self.yaw, self.gen.push_just_finished(previous))
         self.targets.append(self.gen.targets.copy())
 
@@ -66,10 +74,10 @@ class Rig:
         return float(np.abs(np.diff(np.degrees(np.array(self.targets)), axis=0)).max())
 
 
-def steady_walk_peak():
+def steady_walk_peak(forward=1.0):
     """Fastest joint movement of a steady walk, deg/s."""
     rig = Rig()
-    rig.motion.drive(1.0, 0.0)
+    rig.motion.drive(forward, 0.0)
     rig.run(8 * rig.gen.p["gait_period"])
     start = len(rig.targets)
     rig.run(4 * rig.period)
@@ -104,12 +112,49 @@ def test_a_fraction_of_the_stride_walks_a_shorter_stride():
 
 def test_the_heading_is_held():
     drift = 0.02  # rad per cycle, 1.1 deg
-    rig = Rig(disturbance=drift)
-    rig.motion.drive(1.0, 0.0)
-    rig.run(25 * rig.period)
-    assert abs(math.degrees(rig.yaw)) < 1.5, f"heading drifted to {math.degrees(rig.yaw):.1f} deg"
+    for forward in (1.0, -1.0):
+        rig = Rig(disturbance=drift)
+        rig.motion.drive(forward, 0.0)
+        rig.run(25 * rig.period)
+        assert abs(math.degrees(rig.yaw)) < 1.5, f"forward={forward}: heading drifted to {math.degrees(rig.yaw):.1f} deg"
     # the same disturbance with the loop switched off would have turned the body this much
     assert math.degrees(drift) * 25 > 20
+
+
+def test_walking_backwards():
+    rig = Rig()
+    rig.motion.drive(-1.0, 0.0)
+    assert rig.motion.mode == "back" and rig.gen.p["backward"] and rig.motion.forward == 0.0
+    rig.run(rig.period)
+    assert -0.8 < rig.motion.forward < -0.2, "the stride should be growing"
+    rig.run(3 * rig.period)
+    assert rig.motion.forward == -1.0
+    start, swings = rig.travel, len(rig.swings)
+    rig.run(4 * rig.period)
+    stride = load_walk_params(backward=True)[0]["parabola_length"]
+    assert abs((rig.travel - start) / 4 + stride) < 0.03 * stride, f"{(rig.travel - start) / 4:.1f} mm per cycle"
+    assert rig.swings[swings:swings + 8] in ([BL, FR, BR, FL] * 2, [FR, BR, FL, BL] * 2, [BR, FL, BL, FR] * 2,
+                                             [FL, BL, FR, BR] * 2), rig.swings[swings:]
+
+    rig.motion.drive(-0.5, 0.0)  # a shorter stride
+    rig.run(2 * rig.period)
+    assert rig.motion.forward == -0.5
+    rig.motion.stop()
+    assert rig.motion.forward == 0.0
+    assert rig.run_until(lambda: rig.motion.idle, limit=2 * rig.period), "never went idle"
+    assert np.all(rig.gen.D1 == 0) and np.all(rig.gen.lat == 0), "feet are not centred when idle"
+
+
+def test_steering_while_walking_backwards():
+    rig = Rig()
+    rig.motion.drive(-1.0, 1.0)  # yaw left: the nose turns left (counter-clockwise), whichever way the robot walks
+    rig.run(8 * rig.period)
+    assert math.degrees(rig.yaw) > 5 and rig.travel < 0, (math.degrees(rig.yaw), rig.travel)
+    rig.motion.drive(-1.0, 0.0)
+    rig.run(0.5)
+    held = rig.yaw
+    rig.run(8 * rig.period)
+    assert abs(math.degrees(rig.yaw - held)) < 1.0, "kept turning after the turn was let go"
 
 
 def test_steering_while_walking_and_holding_the_new_heading():
@@ -154,6 +199,16 @@ def test_switching_waits_for_the_legs_to_centre():
     rig.run(3 * walk_period)
     assert rig.motion.forward > 0.5
 
+    rig.motion.drive(-1.0, 0.0)  # and to walking backwards: another order of the swings
+    assert rig.motion.mode == "stop" and not rig.gen.p["backward"]
+    assert rig.run_until(lambda: rig.motion.mode == "back", limit=2 * walk_period), "never started walking backwards"
+    assert rig.gen.p["backward"]
+    rig.run(3 * rig.period)
+    assert rig.motion.forward < -0.5
+    rig.motion.drive(1.0, 0.0)
+    assert rig.run_until(lambda: rig.motion.mode == "walk", limit=2 * rig.period), "never walked forward again"
+    assert not rig.gen.p["backward"] and rig.period == walk_period
+
     rig.motion.drive(0.0, 1.0)  # a waiting command is dropped by a stop
     rig.motion.stop()
     rig.run(3 * walk_period)
@@ -166,29 +221,37 @@ def test_the_joints_do_not_jump_when_switching():
     reference.run(10 * reference.period)
     walking = reference.biggest_step()
     reference = Rig()
+    reference.motion.drive(-1.0, 0.0)
+    reference.run(10 * reference.period)
+    walking = max(walking, reference.biggest_step())
+    reference = Rig()
     reference.motion.drive(0.0, 1.0)
     reference.run(10 * reference.period)
     limit = 1.25 * max(walking, reference.biggest_step())
 
     rig = Rig()
-    for forward, turn in ((1.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (1.0, 1.0), (0.0, 1.0)):
+    for forward, turn in ((1.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (1.0, 1.0), (0.0, 1.0), (-1.0, 0.0), (1.0, -1.0),
+                          (-1.0, 1.0), (0.0, -1.0), (-0.5, 0.0)):
         rig.motion.drive(forward, turn)
         rig.run(12.0)
     assert rig.biggest_step() <= limit, f"a joint target moved {rig.biggest_step():.1f} deg in one step, limit {limit:.1f}"
 
 
 def test_commands_at_any_moment_keep_the_joints_near_a_steady_walk():
-    limit = 1.25 * steady_walk_peak()
+    steady = {forward: steady_walk_peak(forward) for forward in (1.0, -1.0)}
+    limit = 1.25 * max(steady.values())
     rng = random.Random(1)
     worst = 0.0
-    for trial in range(6):
+    for trial in range(8):
         rig = Rig()
         for _ in range(30):
-            rig.motion.drive(rng.choice((0.0, 1.0, 1.0, 0.5)), rng.choice((-1.0, 0.0, 0.0, 1.0, rng.uniform(-1, 1))))
+            rig.motion.drive(rng.choice((0.0, 1.0, 1.0, 0.5, -1.0, -1.0, -0.5)),
+                             rng.choice((-1.0, 0.0, 0.0, 1.0, rng.uniform(-1, 1))))
             rig.run(rng.uniform(0.05, 7.0))
         worst = max(worst, rig.peak_speed())
         assert rig.peak_speed() <= limit, f"trial {trial}: joints reached {rig.peak_speed():.0f} deg/s, limit {limit:.0f}"
-    print(f"      worst of the random runs: {worst:.0f} deg/s, steady walk {limit / 1.25:.0f}")
+    print(f"      worst of the random runs: {worst:.0f} deg/s, steady walk {steady[1.0]:.0f} forward, "
+          f"{steady[-1.0]:.0f} backwards")
 
 
 def test_stage_weights_share_out_the_cycle():
@@ -237,7 +300,8 @@ def test_guards():
 
 def main():
     tests = [test_walking_ramps_up_and_stops_at_once, test_a_fraction_of_the_stride_walks_a_shorter_stride,
-             test_the_heading_is_held, test_steering_while_walking_and_holding_the_new_heading,
+             test_the_heading_is_held, test_walking_backwards, test_steering_while_walking_and_holding_the_new_heading,
+             test_steering_while_walking_backwards,
              test_switching_waits_for_the_legs_to_centre, test_the_joints_do_not_jump_when_switching,
              test_commands_at_any_moment_keep_the_joints_near_a_steady_walk, test_stage_weights_share_out_the_cycle,
              test_guards]

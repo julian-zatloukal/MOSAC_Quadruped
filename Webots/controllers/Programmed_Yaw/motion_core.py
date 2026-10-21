@@ -1,15 +1,18 @@
-"""Walking forward and turning on the spot as one command, on the Programmed_Gait_V2 gait generator. Pure python (no Webots).
+"""Walking forward or backwards and turning on the spot as one command, on the Programmed_Gait_V2 gait generator. Pure python
+(no Webots).
 
-MotionController.drive(forward, turn) takes what a teleoperator holds down: forward in [0, 1] (a fraction of the full stride) and
-turn in [-1, 1] (positive = to the left), and stop() halts. Three things can happen:
+MotionController.drive(forward, turn) takes what a teleoperator holds down: forward in [-1, 1] (a fraction of the full stride,
+negative = backwards) and turn in [-1, 1] (positive = to the left), and stop() halts. Four things can happen:
   forward > 0         walk. Without a turn the heading is held (the same PI loop as Programmed_Gait_V2, so the robot walks
                       straight); with one it walks an arc, and when the turn is let go it holds the heading it ended on.
+  forward < 0         walk backwards, the same way. A positive turn still turns the body to the left (counter-clockwise).
   forward = 0, turn   turn on the spot (TurnController).
   both 0              stop.
 
-Walking and turning on the spot use different gait parameters: a turn needs a faster period and a lower foot lift than the
-walk can have (see README.md). The generator can only change them while stopped with the feet centred, so going from one to the
-other means stopping first and waiting for the legs to re-centre (up to one gait cycle of the gait that was running).
+Walking forward, walking backwards and turning on the spot use three sets of gait parameters: a turn needs a faster period and a
+lower foot lift than the walk can have, and walking backwards swings the feet in the reverse order (see README.md). The
+generator can only change them while stopped with the feet centred, so going from one to another means stopping first and
+waiting for the legs to re-centre (up to one gait cycle of the gait that was running).
 
 Stopping works as in TurnController: the stride is zeroed at once, the legs finish the stage they are in, every swing lands at the
 centre, and after one gait cycle `idle` is True and the caller can stop stepping the gait. Speeding up the stride is ramped, which
@@ -27,15 +30,19 @@ from gait_config import DEFAULTS, load_params  # noqa: E402
 from gait_core import YawController  # noqa: E402
 
 WALK_PARAMS_FILE = os.path.join(HERE, "walk_params.json")
+BACK_PARAMS_FILE = os.path.join(HERE, "back_params.json")
 WALK_KEYS = ("ramp_cycles", "turn_max")  # settings of WalkController; the other keys are gait parameters
 
 
-def load_walk_params(source=None):
+def load_walk_params(source=None, backward=False):
     """(gait params, walk settings). The gait params are the walking ones, gait_params.json of Programmed_Gait_V2 as chosen by
     GAIT_PARAMS, with the gait keys of the walk file laid over them. finish_stages is always on: a swing has to start from where
     the foot is, or a change of stride makes the joints jump. The walk file is walk_params.json, or the file named by the
-    WALK_PARAMS environment variable."""
-    source = source or os.environ.get("WALK_PARAMS") or WALK_PARAMS_FILE
+    WALK_PARAMS environment variable. With backward it is back_params.json (or BACK_PARAMS), and the gait walks backwards."""
+    if backward:
+        source = source or os.environ.get("BACK_PARAMS") or BACK_PARAMS_FILE
+    else:
+        source = source or os.environ.get("WALK_PARAMS") or WALK_PARAMS_FILE
     with open(source) as f:
         cfg = json.load(f)
     unknown = set(cfg) - set(DEFAULTS) - set(WALK_KEYS)
@@ -47,11 +54,13 @@ def load_walk_params(source=None):
     gait = load_params()
     gait.update({k: v for k, v in cfg.items() if k in DEFAULTS})
     gait["finish_stages"] = True
+    gait["backward"] = backward
     return gait, {k: cfg[k] for k in WALK_KEYS}
 
 
 class WalkController:
-    """Walks forward holding the heading. Call update() once per control step."""
+    """Walks holding the heading, forward or backwards as the gait parameters in use say (GaitGenerator.direction). Call update()
+    once per control step."""
 
     def __init__(self, gen, kp, ki, turn_max=0.07, ramp_cycles=2.0):
         """gen: a GaitGenerator with finish_stages on.
@@ -120,29 +129,31 @@ class WalkController:
                     self._hold_omega = self._hold.update(yaw)
                 wanted = self._hold_omega
             self.omega = wanted
-            gen.set_twist(self.omega, forward=self.forward)
+            gen.set_twist(self.omega, forward=self.forward * gen.direction)
         elif not self.idle and push_just_finished and gen.t >= self._stop_t + gen.p["gait_period"]:
             self.idle = True  # every foot has had a swing with no stride: all centred
 
 
 def add_walking(gen, turner):
-    """The MotionController that adds walking to turner (a TurnController on gen, which holds the turn parameters). The walking
-    parameters and settings come from load_walk_params()."""
-    walk_params, walk_settings = load_walk_params()
-    walker = WalkController(gen, walk_params["yaw_kp"], walk_params["yaw_ki"], walk_settings["turn_max"],
-                            walk_settings["ramp_cycles"])
-    return MotionController(gen, turner, walker, gen.p, walk_params)
+    """The MotionController that adds walking forward and backwards to turner (a TurnController on gen, which holds the turn
+    parameters). The walking parameters and settings come from load_walk_params()."""
+    walkers = {}
+    for name, backward in (("walk", False), ("back", True)):
+        params, settings = load_walk_params(backward=backward)
+        walkers[name] = (WalkController(gen, params["yaw_kp"], params["yaw_ki"], settings["turn_max"], settings["ramp_cycles"]),
+                         params)
+    return MotionController(gen, turner, *walkers["walk"], *walkers["back"])
 
 
 class MotionController:
-    """Walks and turns on the spot on one GaitGenerator, switching between the two sets of gait parameters when needed."""
+    """Walks and turns on the spot on one GaitGenerator, switching between the sets of gait parameters when needed."""
 
-    def __init__(self, gen, turner, walker, turn_params, walk_params):
-        """turner: the TurnController of gen, which starts with the turn parameters (turn_params) in gen. walker: the
-        WalkController of gen, which uses walk_params."""
-        self.gen, self.turner, self.walker = gen, turner, walker
-        self._params = {"turn": turn_params, "walk": walk_params}
-        self._controller = {"turn": turner, "walk": walker}
+    def __init__(self, gen, turner, walker, walk_params, backer, back_params):
+        """turner: the TurnController of gen, which starts with the turn parameters in gen. walker, backer: WalkControllers of
+        gen, which use walk_params (forward) and back_params (backward)."""
+        self.gen, self.turner, self.walker, self.backer = gen, turner, walker, backer
+        self._params = {"turn": gen.p, "walk": walk_params, "back": back_params}
+        self._controller = {"turn": turner, "walk": walker, "back": backer}
         self._active = "turn"
         self._pending = None  # (forward, turn) waiting for the other gait to be possible
 
@@ -157,12 +168,13 @@ class MotionController:
 
     @property
     def mode(self):
-        """"stop", "turn" (on the spot) or "walk"."""
+        """"stop", "turn" (on the spot), "walk" or "back"."""
         return "stop" if self.active.mode == "stop" else self._active
 
     @property
     def forward(self):
-        return self.walker.forward if self._active == "walk" else 0.0
+        """Stride being commanded, fraction of the full stride (negative = backwards)."""
+        return {"turn": 0.0, "walk": self.walker.forward, "back": -self.backer.forward}[self._active]
 
     @property
     def rate_deg_s(self):
@@ -170,23 +182,24 @@ class MotionController:
 
     @property
     def max_rate_deg_s(self):
-        """Yaw rate at full command when turning on the spot, deg/s."""
-        return self.turner.max_rate_deg_s
+        """Yaw rate at full command when turning on the spot, deg/s (from the turn parameters, also while walking)."""
+        return math.degrees(self.turner.omega_max) / self._params["turn"]["gait_period"]
 
     def drive(self, forward, turn=0.0):
-        """forward in [0, 1], turn in [-1, 1] (positive = left); (0, 0) is a stop. Call it as often as you like."""
-        forward = max(0.0, min(1.0, forward))
+        """forward in [-1, 1] (negative = backwards), turn in [-1, 1] (positive = left); (0, 0) is a stop. Call it as often as
+        you like."""
+        forward = max(-1.0, min(1.0, forward))
         turn = max(-1.0, min(1.0, turn))
         if forward == 0.0 and turn == 0.0:
             self.stop()
             return
-        wanted = "walk" if forward > 0.0 else "turn"
+        wanted = "walk" if forward > 0.0 else "back" if forward < 0.0 else "turn"
         if wanted == self._active:
             self._pending = None
-            if wanted == "walk":
-                self.walker.drive(forward, turn)
-            else:
+            if wanted == "turn":
                 self.turner.turn(turn)
+            else:
+                self.active.drive(abs(forward), turn)
         elif self.active.idle:
             self._switch(wanted)
             self.drive(forward, turn)

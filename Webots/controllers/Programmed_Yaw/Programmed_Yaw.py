@@ -8,8 +8,9 @@ The commands come from Session, which calls the three commands of TurnController
     turner.go_to(heading)  turn to a heading in rad (world frame, 0 = +x, positive = to the left) and stop there
     turner.stop()          halt
 With --teleop (controllerArgs in MOSAC_REAL_V4_teleop.wbt) the commands come from the Teleoperation web page instead
-(remote.py, UDP port 9871), and the robot can also walk forward (motion_core.py); TELEOP_BIND and TELEOP_SERVER_HOST in the
-environment move the robot's side of the link off 127.0.0.1.
+(remote.py, UDP port 9871), and the robot can also walk forward and backwards (motion_core.py); TELEOP_BIND and TELEOP_SERVER_HOST in the
+environment move the robot's side of the link off 127.0.0.1. The webcam on the robot ("camera" in that world) is streamed to the
+page while it shows the video (camera_stream.py, H.264 through ffmpeg, TCP port 9873).
 
 How fast it turns is set in turn_params.json (see README.md). TURN_PARAMS=<file> uses another file.
 The heading is read from the simulator (a stand-in for the gyro of the IMU on the real robot).
@@ -128,15 +129,23 @@ def main():
     delay = params["init_delay"]
     controller = turner  # what the gait follows: the turner, or the MotionController that also walks
     source = None  # where the commands come from: the script, or the web page
+    video = None   # the camera stream of the web page
     if "--teleop" in sys.argv[1:]:
         from motion_core import add_walking
         from remote import RemoteControl
         controller = add_walking(gen, turner)
-        source = RemoteControl(controller, bind_host=os.environ.get("TELEOP_BIND", "127.0.0.1"),
+        bind_host = os.environ.get("TELEOP_BIND", "127.0.0.1")
+        source = RemoteControl(controller, bind_host=bind_host,
                                server=(os.environ.get("TELEOP_SERVER_HOST", "127.0.0.1"), STATUS_PORT))
         print(f"[teleop] listening for commands on UDP {source.command_port}", flush=True)
+        camera = supervisor.getDevice("camera")
+        if camera is not None:
+            from camera_stream import start_camera
+            video = start_camera(camera, timestep, bind_host, log=lambda text: print(text, flush=True))
 
     while supervisor.step(timestep) != -1:
+        if video is not None:
+            video.update(round(supervisor.getTime() * 1000))
         position, yaw = read_pose()
         if source is None and delay <= 0:  # the script starts when the robot has finished standing up
             source = Session(turner)

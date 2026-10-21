@@ -46,9 +46,9 @@ class RemoteControl:
         self._sock.close()
 
     def status(self, yaw, position=None):
-        """What the page shows: heading (deg), position (m) if known, the MotionController mode ("stop", "turn" or "walk"),
-        whether the legs are centred and at rest, the stride being commanded (0..1), and the yaw rate being commanded and the
-        full speed turn rate on the spot (deg/s)."""
+        """What the page shows: heading (deg), position (m) if known, the MotionController mode ("stop", "turn", "walk" or
+        "back"), whether the legs are centred and at rest, the stride being commanded (-1..1, negative = backwards), and the yaw
+        rate being commanded and the full speed turn rate on the spot (deg/s)."""
         m = self.motion
         status = {"yaw_deg": round(math.degrees(yaw), 2), "mode": m.mode, "idle": m.idle, "forward": round(m.forward, 3),
                   "rate_deg_s": round(m.rate_deg_s, 2), "max_rate_deg_s": round(m.max_rate_deg_s, 2)}
@@ -94,7 +94,7 @@ class RemoteControl:
     def _describe(forward, turn):
         parts = []
         if forward:
-            parts.append(f"walk {forward:.0%}")
+            parts.append(f"walk {'back ' if forward < 0 else ''}{abs(forward):.0%}")
         if turn:
             parts.append(f"turn {'left' if turn > 0 else 'right'} {abs(turn):.0%}")
         return ", ".join(parts)

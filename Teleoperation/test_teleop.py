@@ -94,7 +94,8 @@ def test_protocol():
     assert protocol.decode_command(protocol.encode_command("drive", 0.5, -0.25)) == ("drive", 0.5, -0.25)
     assert protocol.decode_command(protocol.encode_command("stop")) == ("stop", 0.0, 0.0)
     assert protocol.decode_command(b'{"cmd": "drive", "forward": 7, "turn": -7}') == ("drive", 1.0, -1.0), "must be clamped"
-    assert protocol.decode_command(b'{"cmd": "drive", "forward": -3}') == ("drive", 0.0, 0.0), "no walking backwards"
+    assert protocol.decode_command(b'{"cmd": "drive", "forward": -3}') == ("drive", -1.0, 0.0), "must be clamped"
+    assert protocol.decode_command(protocol.encode_command("drive", -0.5, 0.0)) == ("drive", -0.5, 0.0)
     assert protocol.decode_command(b'{"cmd": "drive", "turn": 0.5}') == ("drive", 0.0, 0.5), "forward defaults to 0"
     for junk in (b"", b"drive", b"[1]", b'{"cmd": "jump"}', b'{"cmd": "turn", "rate": 1}', b'{"cmd": "drive", "forward": "1"}',
                  b'{"cmd": "drive", "turn": true}', b'{"cmd": "drive", "forward": NaN}', b'{"cmd": "drive", "turn": Infinity}',
@@ -163,6 +164,19 @@ def test_walk_commands_reach_the_robot():
         assert chain.post({"cmd": "drive", "forward": 0.5, "turn": -1.0})[0] == 200
         assert chain.update(lambda: any("walk 50%, turn right 100%" in line for line in chain.log))
         assert chain.motion.mode == "walk"
+
+        # walking backwards while walking forward: the walk stops and the other waits for the legs to centre
+        assert chain.post({"cmd": "drive", "forward": -0.5, "turn": 0.0})[0] == 200
+        assert chain.update(lambda: chain.motion._pending == (-0.5, 0.0))
+        assert chain.motion.mode == "stop" and chain.motion.forward == 0.0
+        chain.motion.walker.idle = True  # the legs re-centred (the gait is not stepped here)
+        chain.run_gait(3000)
+        assert chain.motion.mode == "back" and chain.motion.forward == -0.5
+        assert any("walk back 50%" in line for line in chain.log), chain.log
+        state = chain.robot.status(0.0)
+        assert state["mode"] == "back" and state["forward"] == -0.5, state
+        turn_params = chain.motion._params["turn"]  # the turn on the spot, whatever gait is running
+        assert state["max_rate_deg_s"] == round(math.degrees(chain.motion.turner.omega_max) / turn_params["gait_period"], 2)
 
         # turning on the spot while walking: the walk stops and the turn waits for the legs to centre
         assert chain.post({"cmd": "drive", "forward": 0.0, "turn": 1.0})[0] == 200
