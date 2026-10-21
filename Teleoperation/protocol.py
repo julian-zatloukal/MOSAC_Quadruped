@@ -1,6 +1,7 @@
-"""Messages between the Teleoperation web server and the robot (the Webots controller Programmed_Yaw --teleop).
+"""Messages between the Teleoperation web server and the robot (the Webots controller Programmed_Yaw --teleop), and between the
+server and the page. Imported by both ends of the robot link, so the ports and the timeout live in one place.
 
-Commands and status are UDP, one JSON object per datagram. Imported by both sides, so the ports and the timeout live in one place.
+Commands and status are UDP, one JSON object per datagram:
 
   server -> robot, to COMMAND_PORT:
       {"cmd": "drive", "forward": 1.0, "turn": -0.5}
@@ -16,11 +17,16 @@ Commands and status are UDP, one JSON object per datagram. Imported by both side
 The camera goes over TCP instead (camera_stream.py on the robot side): the web server connects to VIDEO_PORT while a page shows
 the video, and the robot sends video messages until it disconnects. Each message is a 4-byte length (big-endian, the bytes that
 follow), the kind (1 byte), the capture time (8 bytes, microseconds since the epoch) and the payload:
-      VIDEO_CONFIG  {"codec": "avc1.64001f", "width": 1280, "height": 720, "fps": 30, "avcc": base64}, JSON. First, and again
+      VIDEO_CONFIG  {"codec": "avc1.42c01f", "width": 1280, "height": 720, "fps": 30, "avcc": base64}, JSON. First, and again
                     whenever the encoder restarts. avcc is the H.264 decoder configuration (SPS and PPS, ISO 14496-15).
       VIDEO_KEY     one H.264 frame that decodes on its own (IDR), as NAL units with 4-byte lengths (AVCC)
       VIDEO_DELTA   one H.264 frame that needs the frames before it, same format
-The web server passes each message to the page over a WebSocket (/api/video), without the length.
+
+The page talks to the web server over WebRTC (webrtc.py). The camera is a video track: the frames above as they are, with the
+parameter sets in front of each key frame. The data channel "teleop" carries, as JSON text messages,
+  page -> server:   the commands above ({"cmd": "drive", ...} / {"cmd": "stop"}), repeated while a button is held
+  server -> page:   every STATUS_PERIOD seconds {"connected": bool, "age": s since the robot's last status or null,
+                    "robot": the status above or null, "video": {"live": bool, "viewers": n}}
 """
 import collections
 import json

@@ -27,11 +27,15 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "Teleoperation"))
 import protocol  # noqa: E402
 
 FPS = 30
-# A live view: no B-frames and no look-ahead (zerolatency), a key frame every second so that a page can join quickly, and a
-# quality target (crf) capped for Wi-Fi. Measured with the 1280x720 camera panning and bobbing like the walking robot: 7 ms from
-# frame in to packet out, 2.7 Mbit/s, 60% of one M4 core. (h264_videotoolbox used a third of the CPU but held 170 ms of frames.)
-ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-crf", "23", "-maxrate", "4M",
-                "-bufsize", "2M", "-g", str(FPS), "-pix_fmt", "yuv420p"]
+# A live view: no B-frames and no look-ahead (zerolatency), a key frame every second so that a page can join (or recover from a
+# loss: the server cannot ask for one) in at most that time, and a quality target (crf) capped for Wi-Fi. The web server hands
+# these frames to the browser's WebRTC as they are, so the profile is what the browser negotiates (Constrained Baseline: no
+# B-frames to reorder, cheaper to decode on a phone), and the rate buffer is small because the server sends a frame in one burst
+# with no pacing: a key frame is at most about 1 Mbit. Measured with the 1280x720 camera panning and bobbing like the walking
+# robot (High profile, 2 Mbit buffer): 7 ms from frame in to packet out, 2.7 Mbit/s, 60% of one M4 core. (h264_videotoolbox used a
+# third of the CPU but held 170 ms of frames.)
+ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-profile:v", "baseline", "-crf", "23",
+                "-maxrate", "4M", "-bufsize", "1M", "-g", str(FPS), "-pix_fmt", "yuv420p"]
 
 
 def find_ffmpeg():

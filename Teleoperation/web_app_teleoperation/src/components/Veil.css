@@ -1,0 +1,12 @@
+/* The middle of the screen, until there is a picture */
+.veil { position: fixed; inset: 0; display: grid; place-content: center; pointer-events: none; transition: opacity .3s; }
+.veil.gone { opacity: 0; }
+.veil-card {
+  display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 22px 0 18px; border-radius: 999px; font-weight: 500;
+}
+.veil-card svg { width: 20px; height: 20px; color: var(--muted); }
+.spinner {
+  width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid rgba(255, 255, 255, .22); border-top-color: var(--ink);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(1turn); } }

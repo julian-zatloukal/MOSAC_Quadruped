@@ -1,0 +1,16 @@
+/* Top: the link on the left, the view buttons on the right */
+.hud {
+  position: fixed; top: var(--edge-top); left: var(--edge-left); right: var(--edge-right);
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; pointer-events: none;
+}
+.hud > * { pointer-events: auto; }
+.tools { display: flex; gap: 10px; }
+.tool {
+  width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; padding: 0; cursor: pointer;
+  transition: background-color .12s, transform .12s;
+}
+.tool:active { transform: scale(.93); }
+.tool svg { width: 19px; height: 19px; }
+@media (hover: hover) and (pointer: fine) {
+  .tool:hover { background-color: rgba(48, 52, 64, .6); }
+}

@@ -4,21 +4,20 @@ Webots robot.
     python server.py                    serves http://127.0.0.1:8000 and opens it in the browser
     python server.py --port 8001 --no-browser
 
-Needs only the standard library. The robot side is the Webots world MOSAC_REAL_V4_teleop.wbt (controller Programmed_Yaw with
---teleop). Commands go to it over UDP (see protocol.py); it reports its heading back, which the page shows. While a page shows
-the video, the server also connects to the robot's camera (TCP) and passes the H.264 frames to the page over a WebSocket.
+The page is the React app in web_app_teleoperation (pnpm build puts it in dist/index.html, a single file). The page talks to this
+server over WebRTC (webrtc.py): the camera is a video track and the commands and the robot's state go over a data channel; the
+only HTTP besides the page is the POST that sets that connection up. The robot side is the Webots world MOSAC_REAL_V4_teleop.wbt
+(controller Programmed_Yaw with --teleop). Commands go to it over UDP (see protocol.py); it reports its heading back, which the
+page shows. While a page shows the video, the server also connects to the robot's camera (TCP) and passes the H.264 frames on.
+
+Needs aiortc (pip install -r requirements.txt) for the WebRTC; the rest is the standard library.
 
 The page is meant for this computer. With --host 0.0.0.0 anything on the network can drive the robot: there is no login.
 """
 import argparse
-import base64
-import binascii
-import hashlib
 import json
 import os
-import select
 import socket
-import struct
 import sys
 import threading
 import time
@@ -31,12 +30,16 @@ sys.path.insert(0, HERE)
 
 import protocol  # noqa: E402
 
-FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
-         "/video.js": ("video.js", "text/javascript; charset=utf-8")}
-MAX_BODY = 1024      # bytes of a command request
+try:
+    import webrtc  # noqa: E402
+except ImportError as error:
+    sys.exit(f"{error}\nThe page's WebRTC needs aiortc: pip install -r {os.path.join(HERE, 'requirements.txt')} "
+             f"(in a virtual environment: python3 -m venv .venv)")
+
+PAGE = os.path.join(HERE, "web_app_teleoperation", "dist", "index.html")
+MAX_BODY = 64 << 10  # bytes of a connection offer (an SDP with candidates is a few kB)
 STALE_AFTER = 1.0    # s without a status message before the robot counts as disconnected
 VIDEO_LINGER = 3.0   # s the camera stays connected after the last page leaves (a reload does not restart the encoder)
-WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 class RobotLink:
@@ -89,7 +92,7 @@ class RobotLink:
 
 
 class VideoRelay:
-    """The camera: connected to the robot only while some page shows the video, it hands each message to every page's queue."""
+    """The camera: connected to the robot only while some page shows the video, it hands each message to every page's sink."""
 
     def __init__(self, robot_host, port, linger=VIDEO_LINGER):
         self.robot = (robot_host, port)
@@ -103,21 +106,19 @@ class VideoRelay:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def subscribe(self):
-        """A protocol.VideoQueue that gets the video until unsubscribe()."""
-        queue = protocol.VideoQueue()
+    def subscribe(self, sink):
+        """sink (put(message) and close(), like protocol.VideoQueue) gets the video until unsubscribe(sink)."""
         with self._lock:
-            self._viewers.append(queue)
+            self._viewers.append(sink)
             if self._config is not None:
-                queue.put(self._config)
+                sink.put(self._config)
         self._wake.set()
-        return queue
 
-    def unsubscribe(self, queue):
-        queue.close()
+    def unsubscribe(self, sink):
+        sink.close()
         with self._lock:
-            if queue in self._viewers:
-                self._viewers.remove(queue)
+            if sink in self._viewers:
+                self._viewers.remove(sink)
 
     def state(self):
         with self._lock:
@@ -129,8 +130,8 @@ class VideoRelay:
         self._wake.set()
         with self._lock:
             viewers, self._viewers = self._viewers, []
-        for queue in viewers:
-            queue.close()
+        for sink in viewers:
+            sink.close()
         self._thread.join(timeout=2)
 
     def _watched(self):
@@ -183,8 +184,8 @@ class VideoRelay:
                             self._last_frame = time.monotonic()
                     viewers = list(self._viewers)
                 for message in messages:
-                    for queue in viewers:
-                        queue.put(message)
+                    for sink in viewers:
+                        sink.put(message)
             if self._watched():
                 alone_since = None
             elif alone_since is None:
@@ -193,24 +194,12 @@ class VideoRelay:
                 return  # the robot switches its camera off when this connection closes
 
 
-def websocket_frame(payload, opcode=0x2):
-    """A whole (FIN) server-to-page WebSocket frame; binary by default. Frames from a server are not masked."""
-    n = len(payload)
-    if n < 126:
-        header = struct.pack(">BB", 0x80 | opcode, n)
-    elif n < 1 << 16:
-        header = struct.pack(">BBH", 0x80 | opcode, 126, n)
-    else:
-        header = struct.pack(">BBQ", 0x80 | opcode, 127, n)
-    return header + payload
-
-
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"  # keep-alive: the page posts a command every 100 ms while a button is held
+    protocol_version = "HTTP/1.1"
     server_version = "MOSACTeleop"
 
     def log_message(self, format, *args):
-        pass  # 10 requests per second would bury everything else
+        pass
 
     def _send(self, status, body, content_type="application/json"):
         self.send_response(status)
@@ -238,83 +227,21 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             self.close_connection = True
             return self._json(403, {"error": "unexpected Host header"})
-        path = urlparse(self.path).path
-        if path in FILES:
-            name, content_type = FILES[path]
-            with open(os.path.join(HERE, name), "rb") as f:
-                self._send(200, f.read(), content_type)
-        elif path == "/api/state":
-            self._json(200, dict(self.server.link.state(), video=self.server.video.state()))
-        elif path == "/api/video":
-            self._video()
-        else:
-            self._json(404, {"error": "not found"})
-
-    def _video(self):
-        """The camera as a WebSocket: one binary message per protocol video message, without its length."""
-        origin = self.headers.get("Origin")
-        key = self.headers.get("Sec-WebSocket-Key", "")
+        if urlparse(self.path).path not in ("/", "/index.html"):
+            return self._json(404, {"error": "not found"})
         try:
-            key_ok = len(base64.b64decode(key, validate=True)) == 16
-        except binascii.Error:
-            key_ok = False
-        problem = None
-        if origin is not None and urlparse(origin).netloc != self.headers.get("Host"):
-            problem = (403, "cross-origin request")  # a WebSocket is not covered by the browser's same-origin rules
-        elif self.headers.get("Upgrade", "").lower() != "websocket" or self.headers.get("Sec-WebSocket-Version") != "13" \
-                or not key_ok:
-            problem = (400, "expected a WebSocket")
-        if problem:
-            self.close_connection = True
-            return self._json(problem[0], {"error": problem[1]})
-
-        self.send_response(101, "Switching Protocols")
-        self.send_header("Upgrade", "websocket")
-        self.send_header("Connection", "Upgrade")
-        accept = base64.b64encode(hashlib.sha1((key + WEBSOCKET_GUID).encode()).digest()).decode()
-        self.send_header("Sec-WebSocket-Accept", accept)
-        self.end_headers()
-        self.wfile.flush()
-        self.close_connection = True
-        sock = self.connection
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.settimeout(5.0)  # a page that stops reading is dropped instead of blocking this thread forever
-        queue = self.server.video.subscribe()
-        try:
-            while not queue.closed:
-                message = queue.get(timeout=0.25)
-                if message is not None:
-                    sock.sendall(websocket_frame(message[4:]))
-                if select.select([sock], [], [], 0)[0] and not self._websocket_receive():
-                    break
-        except OSError:
-            pass  # the page went away
-        finally:
-            self.server.video.unsubscribe(queue)
-
-    def _websocket_receive(self):
-        """Reads a frame from the page, which only sends control frames. False once the connection is over."""
-        head = self.rfile.read(2)
-        if len(head) < 2:
-            return False
-        opcode, length = head[0] & 0x0F, head[1] & 0x7F
-        if length > 125:
-            return False  # control frames are short; anything else is not expected
-        mask = self.rfile.read(4) if head[1] & 0x80 else bytes(4)
-        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(self.rfile.read(length)))
-        if opcode == 0x8:  # close: answer with the same code
-            self.connection.sendall(websocket_frame(payload[:2], 0x8))
-            return False
-        if opcode == 0x9:  # ping
-            self.connection.sendall(websocket_frame(payload, 0xA))
-        return True
+            with open(PAGE, "rb") as f:
+                self._send(200, f.read(), "text/html; charset=utf-8")
+        except FileNotFoundError:
+            self._send(503, b"The page is not built yet: cd web_app_teleoperation && pnpm install && pnpm build\n",
+                       "text/plain; charset=utf-8")
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/command":
+        if urlparse(self.path).path != "/api/offer":
             self.close_connection = True
             return self._json(404, {"error": "not found"})
-        # A page on another site can post to 127.0.0.1 too. Requiring JSON makes the browser ask first (a preflight that
-        # this server never answers), and the Origin check covers the rest.
+        # A page on another site can post to 127.0.0.1 too, and the connection it would get drives the robot. Requiring JSON
+        # makes the browser ask first (a preflight that this server never answers), and the Origin check covers the rest.
         origin = self.headers.get("Origin")
         problem = None
         if not self._host_ok():
@@ -333,16 +260,26 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True  # the body was not read
             return self._json(problem[0], {"error": problem[1]})
 
-        command = protocol.decode_command(self.rfile.read(length))
-        if command is None:
-            return self._json(400, {"error": "not a command"})
-        sent = self.server.link.send(protocol.encode_command(*command))
-        self._json(200 if sent else 502, {"ok": sent})
+        try:
+            offer = json.loads(self.rfile.read(length))
+            sdp, kind = offer["sdp"], offer["type"]
+            if not isinstance(sdp, str) or kind != "offer":
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            return self._json(400, {"error": "not an offer"})
+        try:
+            answer = self.server.pages.answer(sdp, kind)
+        except webrtc.Busy:
+            return self._json(503, {"error": "too many pages connected"})
+        except Exception as error:  # aiortc rejects an SDP it cannot use with a ValueError, or something less specific
+            return self._json(400, {"error": f"cannot connect: {error}"})
+        self._json(200, answer)
 
 
 def make_server(host="127.0.0.1", port=8000, robot_host="127.0.0.1", command_port=protocol.COMMAND_PORT,
                 status_port=protocol.STATUS_PORT, status_bind="127.0.0.1", video_port=protocol.VIDEO_PORT):
-    """(HTTP server, RobotLink). port=0 / status_port=0 pick free ports. The VideoRelay is httpd.video."""
+    """(HTTP server, RobotLink). port=0 / status_port=0 pick free ports. The VideoRelay is httpd.video, the connected pages
+    are httpd.pages."""
     link = RobotLink(robot_host, command_port, status_port, status_bind)
     try:
         httpd = ThreadingHTTPServer((host, port), Handler)
@@ -352,6 +289,7 @@ def make_server(host="127.0.0.1", port=8000, robot_host="127.0.0.1", command_por
     httpd.daemon_threads = True
     httpd.link = link
     httpd.video = VideoRelay(robot_host, video_port)
+    httpd.pages = webrtc.Pages(link, httpd.video)
     httpd.allowed_hosts = None if host in ("0.0.0.0", "") else {"localhost", "127.0.0.1", "[::1]", host}
     return httpd, link
 
@@ -377,6 +315,9 @@ def main():
           f"Commands go to the robot at {args.robot_host}:{protocol.COMMAND_PORT}, status comes back on UDP {link.status_port}, "
           f"the camera from TCP {protocol.VIDEO_PORT}.\n"
           f"Open Webots/worlds/MOSAC_REAL_V4_teleop.wbt for the robot. Ctrl+C stops the server (and the robot).", flush=True)
+    if not os.path.isfile(PAGE):
+        print(f"The page is not built yet: cd {os.path.join(HERE, 'web_app_teleoperation')} && pnpm install && pnpm build",
+              file=sys.stderr, flush=True)
     if not args.no_browser:
         threading.Timer(0.5, webbrowser.open, [url]).start()
     try:
@@ -387,6 +328,7 @@ def main():
         for _ in range(3):  # leave the robot stopped, whatever the page was doing
             link.send(protocol.encode_command("stop"))
         httpd.server_close()
+        httpd.pages.close()
         httpd.video.close()
         link.close()
 

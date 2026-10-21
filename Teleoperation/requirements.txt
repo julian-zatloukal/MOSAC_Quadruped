@@ -1,0 +1,3 @@
+# The page's WebRTC (webrtc.py). Everything else in server.py is the standard library.
+# python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python server.py
+aiortc>=1.15,<2

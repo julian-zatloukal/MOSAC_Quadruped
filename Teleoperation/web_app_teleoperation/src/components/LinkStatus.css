@@ -1,0 +1,41 @@
+/* The link: a dot and a word, which opens into the details */
+.link {
+  width: max-content; border-radius: 22px; overflow: hidden; interpolate-size: allow-keywords;
+  transition: width .26s cubic-bezier(.2, .8, .2, 1);
+}
+.link[data-open="true"] { width: min(268px, calc(100vw - var(--edge-left) - var(--edge-right) - 108px)); }
+.link-head {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 44px; padding: 0 16px 0 16px; border: 0; background: none;
+  font-weight: 600; text-align: left; cursor: pointer; white-space: nowrap;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(52, 209, 122, .22), 0 0 10px rgba(52, 209, 122, .65); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(245, 165, 36, .22), 0 0 10px rgba(245, 165, 36, .55); }
+.dot.bad { background: var(--bad); box-shadow: 0 0 0 3px rgba(242, 84, 91, .22), 0 0 10px rgba(242, 84, 91, .55); }
+
+.link-details {
+  contain: inline-size; /* the pill is as wide as its word, whatever is inside while it is closed */
+  display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows .26s cubic-bezier(.2, .8, .2, 1), opacity .2s;
+}
+.link[data-open="true"] .link-details { grid-template-rows: 1fr; opacity: 1; }
+.link-body { min-height: 0; overflow: hidden; }
+.link-inner { padding: 0 16px 14px; }
+.robot { display: flex; align-items: center; gap: 9px; padding: 11px 0; border-top: 1px solid var(--edge); }
+.compass { width: 20px; height: 20px; flex: none; }
+.compass circle { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+.compass path { fill: var(--ink); transition: transform .12s linear; transform-origin: 12px 12px; }
+.num { font-variant-numeric: tabular-nums; font-weight: 650; font-size: 17px; }
+.mode { color: var(--muted); }
+.metrics {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; margin: 0; padding: 13px 0; border-top: 1px solid var(--edge);
+}
+.metric { display: flex; flex-direction: column-reverse; gap: 3px; min-width: 0; }
+.metric dt { font-size: 11px; color: var(--faint); letter-spacing: .02em; }
+.metric dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.metric dd.warn { color: var(--warn); }
+.metric dd.bad { color: var(--bad); }
+.route { margin: 0; padding-top: 11px; border-top: 1px solid var(--edge); font-size: 12px; color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .link, .link-details { transition: none; }
+}
