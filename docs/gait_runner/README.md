@@ -33,8 +33,21 @@ The first run builds the image `mosac-gait-runner-build:1`, which takes about 2 
 - the walk parameters come from `Webots/controllers/`.
 
 **Flashing** is done on the host, not in Docker. Either:
-- copy `build/gait_runner.bin` to the NUCLEO's USB drive (called `NOD_F412ZG`), or
+- copy `build/gait_runner.bin` to the NUCLEO's USB drive (`NODE_F412ZG`), or
 - run `make flash` (OpenOCD) or use STM32CubeProgrammer.
+
+Switch the servo power off while flashing: the old program stops sending pulses, so the legs go limp. Flashing
+replaces whatever is on the board. The original Mbed firmware is backed up in `firmware_backup/` on the Windows
+machine, and `make restore` in `servo_test_leg/` puts it back.
+
+**On the Windows machine** (board on drive E:, ST-LINK console on COM5), copy over only the built files from
+`build/`; `build/` is not in git:
+- **Drag and drop:** copy `gait_runner.bin` to `E:\` (`copy gait_runner.bin E:\` in a terminal). The ST-LINK programs
+  the board and resets it, and the drive reappears. A `FAIL.TXT` on the drive means it did not work.
+- **OpenOCD** (installed with scoop, ST-LINK driver installed). From the folder holding `gait_runner.elf`:
+  `openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c "program gait_runner.elf verify reset exit"`
+- **Check it:** open COM5 at 115200 and press the black RESET button. The banner starts `=== gait_runner, RUN_MONITOR ===`,
+  and with the default configuration it lists 2 problems (FFL).
 
 **Serial:** ST-LINK virtual COM port, 115200 8N1. The log tool of leg_lab can record it:
 `python3 ../leg_lab/tools/leg_lab_log.py record --port <port> --out walk.log`
